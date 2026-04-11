@@ -2,6 +2,7 @@
  * ОДНОРАЗОВЫЙ СКРИПТ — запустить один раз для перевода всех старых статей
  *
  * Запуск:
+ *   cd /var/www/backend.docpats-ai-news.com
  *   node scripts/prefetch-synthesis-translations.js
  *
  * Скрипт переводит все synthesis статьи у которых нет переводов.
@@ -21,7 +22,6 @@ if (!MONGODB_URI) {
   process.exit(1);
 }
 
-// Имя базы уже в строке подключения — dbName не указываем
 await mongoose.connect(MONGODB_URI);
 console.log("✅ MongoDB подключена");
 
@@ -51,8 +51,10 @@ const synthesisSchema = new mongoose.Schema(
 const Synthesis =
   mongoose.models.Synthesis || mongoose.model("Synthesis", synthesisSchema);
 
-// ── Claude client ─────────────────────────────────────────────
-const anthropic = new Anthropic();
+// ── Claude client — таймаут задаётся здесь, не в messages.create ──
+const anthropic = new Anthropic({
+  timeout: 300 * 1000, // 5 минут на один запрос
+});
 
 const LOCALE_NAMES = {
   en: "English",
@@ -101,7 +103,7 @@ async function run() {
   console.log("─".repeat(50));
 
   if (articles.length === 0) {
-    console.log("⚠️  Статей не найдено. Проверь название коллекции в MongoDB.");
+    console.log("⚠️  Статей не найдено.");
     await mongoose.disconnect();
     process.exit(0);
   }
@@ -143,7 +145,8 @@ async function run() {
         console.log(`  ✅ ${locale} — "${translated.title.slice(0, 50)}..."`);
         totalTranslated++;
 
-        await new Promise((r) => setTimeout(r, 1000));
+        // Пауза между вызовами
+        await new Promise((r) => setTimeout(r, 2000));
       } catch (err) {
         console.error(`  ❌ ${locale} — ошибка: ${err.message}`);
       }

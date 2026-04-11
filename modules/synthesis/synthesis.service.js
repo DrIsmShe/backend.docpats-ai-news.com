@@ -435,9 +435,7 @@ ${sourcesText}
     `[Synthesis] ✓ "${title}" — ${wordCount} слов | id: ${saved._id}`,
   );
 
-  // ── Запускаем фоновый перевод на EN, AZ, TR, AR — без await ──
-  // Переводы готовятся параллельно пока сервер обслуживает другие запросы.
-  // К моменту прихода первых читателей (обычно через 10+ мин) всё будет в кэше.
+  // Запускаем фоновый перевод на EN, AZ, TR, AR — без await
   translateAllLocales(saved).catch((err) =>
     console.error("[Synthesis] Background translate error:", err.message),
   );
@@ -445,16 +443,49 @@ ${sourcesText}
   return saved;
 }
 
-export async function runSynthesis({ hoursBack = 12, maxGroups = 1 } = {}) {
+// ─── УМНЫЙ ПОДБОР НОВОСТЕЙ ────────────────────────────────────
+// 1. Сначала берём свежие (за hoursBack часов)
+// 2. Если мало — добираем из всей базы (разные специальности)
+async function fetchNewsForSynthesis(hoursBack) {
   const since = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
 
-  const items = await NewsItem.find({ createdAt: { $gte: since } })
+  // Свежие новости
+  let items = await NewsItem.find({ createdAt: { $gte: since } })
     .sort({ createdAt: -1 })
     .limit(100)
     .lean();
 
+  if (items.length >= 10) {
+    console.log(
+      `[Synthesis] Свежих новостей: ${items.length} (за ${hoursBack}ч)`,
+    );
+    return items;
+  }
+
+  // Мало свежих — берём из всей базы, случайную выборку чтобы не повторяться
+  console.log(
+    `[Synthesis] Свежих мало (${items.length}), добираем из всей базы...`,
+  );
+
+  const allItems = await NewsItem.find({})
+    .sort({ createdAt: -1 })
+    .limit(500)
+    .lean();
+
+  // Перемешиваем чтобы каждый раз синтезировались разные темы
+  const shuffled = allItems.sort(() => Math.random() - 0.5).slice(0, 200);
+
+  console.log(
+    `[Synthesis] Итого для синтеза: ${shuffled.length} новостей из базы`,
+  );
+  return shuffled;
+}
+
+export async function runSynthesis({ hoursBack = 72, maxGroups = 1 } = {}) {
+  const items = await fetchNewsForSynthesis(hoursBack);
+
   if (items.length < 3) {
-    console.log("[Synthesis] Мало новостей:", items.length);
+    console.log("[Synthesis] База новостей пуста:", items.length);
     return { generated: 0 };
   }
 
@@ -462,6 +493,7 @@ export async function runSynthesis({ hoursBack = 12, maxGroups = 1 } = {}) {
   let generated = 0;
 
   for (const { specialty, articles } of groups) {
+    // Не генерируем если уже есть статья по этой теме за последние 6 часов
     const exists = await Synthesis.findOne({
       specialty,
       createdAt: { $gte: new Date(Date.now() - 6 * 60 * 60 * 1000) },
