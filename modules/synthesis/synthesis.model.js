@@ -10,6 +10,16 @@ const sourceRefSchema = new mongoose.Schema(
   { _id: false },
 );
 
+// Кэш переводов — хранится прямо в документе, отдельная коллекция не нужна
+const translationCacheSchema = new mongoose.Schema(
+  {
+    title: { type: String },
+    body: { type: String },
+    translatedAt: { type: Date, default: Date.now },
+  },
+  { _id: false },
+);
+
 const synthesisSchema = new mongoose.Schema(
   {
     title: { type: String, required: true },
@@ -24,6 +34,12 @@ const synthesisSchema = new mongoose.Schema(
       type: String,
       enum: ["published", "draft"],
       default: "published",
+    },
+    // Map: { "en": { title, body, translatedAt }, "az": {...}, ... }
+    translations: {
+      type: Map,
+      of: translationCacheSchema,
+      default: () => new Map(),
     },
   },
   { timestamps: true },

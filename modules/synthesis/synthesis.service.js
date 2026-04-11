@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import NewsItem from "../news/news.model.js";
 import Synthesis from "./synthesis.model.js";
+import { translateAllLocales } from "./synthesis.controller.js";
 
 const client = new Anthropic();
 
@@ -120,7 +121,6 @@ const SPECIALTY_MAP = {
 
 // ─── СТИЛИ С ПОДСТИЛЯМИ ────────────────────────────────────────
 const ARTICLE_STYLES = [
-  // 1. АНАЛИТИЧЕСКИЙ
   {
     name: "analytical_comparative",
     group: "Аналитический",
@@ -142,8 +142,6 @@ const ARTICLE_STYLES = [
     биохимические взаимодействия. Объясни "почему" и "как", а не только "что". 
     Целевая аудитория — исследователи и специалисты.`,
   },
-
-  // 2. КЛИНИЧЕСКИЙ
   {
     name: "clinical_practical",
     group: "Клинический",
@@ -165,8 +163,6 @@ const ARTICLE_STYLES = [
     стандартами, какие новые данные требуют пересмотра протоколов, 
     какие вопросы остаются дискуссионными среди клиницистов.`,
   },
-
-  // 3. НАУЧНО-ПОПУЛЯРНЫЙ
   {
     name: "popular_storytelling",
     group: "Научно-популярный",
@@ -188,8 +184,6 @@ const ARTICLE_STYLES = [
     какие были тупики и прорывы, что это значит для человечества. 
     Тон — восхищение и интеллектуальное возбуждение от науки.`,
   },
-
-  // 4. ЖУРНАЛИСТСКИЙ
   {
     name: "investigative",
     group: "Журналистский",
@@ -218,8 +212,6 @@ const ARTICLE_STYLES = [
     покажи где эксперты расходятся и почему, дай читателю инструменты для собственного суждения. 
     Без преждевременных выводов.`,
   },
-
-  // 5. ОБЗОРНЫЙ
   {
     name: "systematic_review",
     group: "Обзорный",
@@ -241,8 +233,6 @@ const ARTICLE_STYLES = [
     за последние десятилетия, какие парадигмы рухнули, что осталось незыблемым, 
     как текущие данные вписываются в эту эволюцию.`,
   },
-
-  // 6. ТРАНСЛЯЦИОННЫЙ
   {
     name: "bench_to_bedside",
     group: "Трансляционный",
@@ -257,8 +247,6 @@ const ARTICLE_STYLES = [
     куда ведут эти открытия через 5-10-20 лет, какие технологии они откроют, 
     как изменится медицина. Обоснованная экстраполяция, а не фантастика.`,
   },
-
-  // 7. ОБРАЗОВАТЕЛЬНЫЙ
   {
     name: "teaching_review",
     group: "Образовательный",
@@ -273,8 +261,6 @@ const ARTICLE_STYLES = [
     строгая структура, клинически значимые выводы, дискуссионные вопросы в конце каждого раздела. 
     Тон — коллега представляет коллегам.`,
   },
-
-  // 8. ЭТИЧЕСКИЙ И СОЦИАЛЬНЫЙ
   {
     name: "bioethics",
     group: "Этический",
@@ -289,8 +275,6 @@ const ARTICLE_STYLES = [
     популяции, группы риска, экономически уязвимых. 
     Где неравенство усиливается, где можно его преодолеть.`,
   },
-
-  // 9. ЭКОНОМИЧЕСКИЙ
   {
     name: "health_economics",
     group: "Экономический",
@@ -298,8 +282,6 @@ const ARTICLE_STYLES = [
     стоимость-эффективность новых подходов, нагрузка на систему здравоохранения, 
     экономические последствия болезни и её лечения. Данные и расчёты.`,
   },
-
-  // 10. МЕЖДИСЦИПЛИНАРНЫЙ
   {
     name: "interdisciplinary",
     group: "Междисциплинарный",
@@ -407,7 +389,6 @@ ${sourcesText}
 ## [Раздел 5] — 600-700 слов
 ## Заключение — 400-500 слов
 ## Литература
-## Литература
 [1] Авторы. Название. Издание. Год. URL
 
 ## Об этом материале
@@ -428,6 +409,7 @@ ${sourcesText}
   if (!message.content || !message.content[0] || !message.content[0].text) {
     throw new Error(`Пустой ответ от API для "${specialty}"`);
   }
+
   const body = message.content[0].text;
   const titleMatch = body.match(/^#\s+(.+)/m);
   const title = titleMatch ? titleMatch[1].trim() : `Обзор: ${specialty}`;
@@ -452,6 +434,15 @@ ${sourcesText}
   console.log(
     `[Synthesis] ✓ "${title}" — ${wordCount} слов | id: ${saved._id}`,
   );
+
+  // ── Запускаем фоновый перевод на EN, AZ, TR, AR — без await ──
+  // Переводы готовятся параллельно пока сервер обслуживает другие запросы.
+  // К моменту прихода первых читателей (обычно через 10+ мин) всё будет в кэше.
+  translateAllLocales(saved).catch((err) =>
+    console.error("[Synthesis] Background translate error:", err.message),
+  );
+
+  return saved;
 }
 
 export async function runSynthesis({ hoursBack = 12, maxGroups = 1 } = {}) {
