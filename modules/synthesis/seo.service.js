@@ -31,7 +31,12 @@ async function generateSeoForLocale(title, body, locale) {
   });
 
   const text = msg.content[0].text.trim();
-  return JSON.parse(text);
+  const clean = text
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+  return JSON.parse(clean);
 }
 
 export async function generateAllSeo(articleId, title, body) {
@@ -50,7 +55,6 @@ export async function generateAllSeo(articleId, title, body) {
       };
     }
   }
-
   await Synthesis.findByIdAndUpdate(articleId, { seo });
   console.log(`✅ SEO сгенерирован для статьи ${articleId}`);
 }
