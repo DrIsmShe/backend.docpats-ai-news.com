@@ -10,7 +10,7 @@ const LOCALE_NAMES = {
 
 const SUPPORTED_LOCALES = Object.keys(LOCALE_NAMES);
 
-const anthropic = new Anthropic();
+const anthropic = new Anthropic({ timeout: 300_000 });
 
 // ─── Перевод одной статьи через Claude (один вызов) ──────────
 async function translateSynthesisArticle(title, body, locale) {

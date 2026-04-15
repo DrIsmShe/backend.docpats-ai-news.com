@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import NewsItem from "../news/news.model.js";
 import Synthesis from "./synthesis.model.js";
 import { translateAllLocales } from "./synthesis.controller.js";
-
+import { generateAllSeo } from "./seo.service.js";
 const client = new Anthropic();
 
 // ─── ВСЕ МЕДИЦИНСКИЕ И НАУЧНЫЕ ОБЛАСТИ ───────────────────────
@@ -430,12 +430,13 @@ ${sourcesText}
       year: new Date(a.publishedAt || a.createdAt || Date.now()).getFullYear(),
     })),
   });
-
-  console.log(
-    `[Synthesis] ✓ "${title}" — ${wordCount} слов | id: ${saved._id}`,
+  // Фоном — не блокируем
+  // Фоном — SEO
+  generateAllSeo(saved._id, saved.title, saved.body).catch((err) =>
+    console.error("[Synthesis] SEO generation error:", err.message),
   );
 
-  // Запускаем фоновый перевод на EN, AZ, TR, AR — без await
+  // Фоном — переводы
   translateAllLocales(saved).catch((err) =>
     console.error("[Synthesis] Background translate error:", err.message),
   );

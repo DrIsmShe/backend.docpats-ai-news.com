@@ -30,6 +30,13 @@ const synthesisSchema = new mongoose.Schema(
     style: { type: String }, // analytical | clinical | popular | investigative | review
     author: { type: String, default: "Доктор Исмаил" },
     sources: [sourceRefSchema],
+    seo: {
+      ru: { title: String, description: String },
+      en: { title: String, description: String },
+      az: { title: String, description: String },
+      ar: { title: String, description: String },
+      tr: { title: String, description: String },
+    },
     status: {
       type: String,
       enum: ["published", "draft"],
