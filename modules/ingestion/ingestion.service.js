@@ -3,6 +3,7 @@
 //   1. Добавлено детальное логирование каждого шага
 //   2. Ошибки больше не глотаются тихо
 //   3. processSource обрабатывает статьи последовательно (без лишних race conditions)
+//   4. RSS-переводы УБРАНЫ из ингеста — теперь lazy через POST /api/news/:slug/translate-content
 
 import Source from "../sources/source.model.js";
 import News from "../news/news.model.js";
@@ -13,7 +14,6 @@ import { fetchPubMed } from "./fetchers/pubmed.fetcher.js";
 import { hybridClassify } from "../ai/hybridClassifier.js";
 import { assignArticleToCluster } from "../clustering/clustering.service.js";
 import { extractFullContent } from "../news/news.service.js";
-import { translateArticle } from "../translate/translation.service.js";
 import { makeHash } from "../../utils/hash.js";
 import { cosineSimilarity } from "../../utils/vector.js";
 import slugify from "slugify";
@@ -202,7 +202,6 @@ async function processArticle(source, rawArticle) {
 
     console.log(`  ✅ Saved: "${article.title.slice(0, 60)}"`);
   } catch (error) {
-    // ✅ УЛУЧШЕНИЕ: логируем полную причину ошибки сохранения
     console.error(
       `  ❌ Insert error for "${article.title?.slice(0, 50)}": ${error.message}`,
     );
@@ -219,10 +218,10 @@ async function processArticle(source, rawArticle) {
     console.error("Clustering error:", err.message),
   );
 
-  // ── TRANSLATION (fire-and-forget) ──
-  translateArticle(news._id).catch((err) =>
-    console.error("Translation failed:", err.message),
-  );
+  // ── TRANSLATION ──
+  // RSS-статьи переводятся ON-DEMAND при просмотре пользователем
+  // через POST /api/news/:slug/translate-content (newstranslate.controller.js).
+  // Автоматический перевод 5×N статей/день отключён для экономии API.
 
   return { inserted: 1, skipped: 0 };
 }

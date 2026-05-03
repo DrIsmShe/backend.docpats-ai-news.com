@@ -1,5 +1,4 @@
 // modules/scheduler/scheduler.js
-
 import cron from "node-cron";
 import { runIngestion } from "../ingestion/ingestion.service.js";
 import { seedSourcesIfEmpty } from "../sources/source.service.js";
@@ -8,10 +7,9 @@ import { runSynthesis } from "../synthesis/synthesis.service.js";
 export async function startScheduler() {
   console.log("📅 Scheduler initializing...");
 
-  // ── Полное отключение фоновых задач ───────────────────
+  // ── Полное отключение фоновых задач (для локалки) ──
   if (process.env.DISABLE_SCHEDULERS === "true") {
     console.log("⏸  Schedulers DISABLED via DISABLE_SCHEDULERS=true");
-    console.log("   (на локалке фоновый ingestion и synthesis не запускаются)");
     return;
   }
 
@@ -23,19 +21,21 @@ export async function startScheduler() {
     console.error("❌ Seed error:", err.message);
   }
 
-  // 2. Запускаем ingestion сразу при старте
-  try {
-    console.log("🔄 Running initial ingestion...");
-    const result = await runIngestion();
-    console.log(
-      `✅ Initial ingestion done: inserted=${result.inserted}, skipped=${result.skipped}`,
-    );
-  } catch (err) {
-    console.error("❌ Initial ingestion error:", err.message);
-  }
+  // 2. Ingestion при старте — асинхронно, не блокирует поднятие сервера
+  setImmediate(async () => {
+    try {
+      console.log("🔄 Running initial ingestion (async)...");
+      const result = await runIngestion();
+      console.log(
+        `✅ Initial ingestion done: inserted=${result.inserted}, skipped=${result.skipped}`,
+      );
+    } catch (err) {
+      console.error("❌ Initial ingestion error:", err.message);
+    }
+  });
 
-  // 3. Ingestion каждые 30 минут
-  cron.schedule("*/30 * * * *", async () => {
+  // 3. Ingestion — 2 раза в день: 03:00 (перед синтезом) и 15:00 (резерв)
+  cron.schedule("0 3,15 * * *", async () => {
     console.log("⏰ Scheduled ingestion starting...");
     try {
       const result = await runIngestion();
@@ -45,11 +45,11 @@ export async function startScheduler() {
     }
   });
 
-  // 4. Синтез каждый день в 04:00
+  // 4. Синтез — каждый день в 04:00 UTC, 1 статья в день
   cron.schedule("0 4 * * *", async () => {
     console.log("🧠 Synthesis cron starting...");
     try {
-      const result = await runSynthesis({ hoursBack: 72, maxGroups: 3 });
+      const result = await runSynthesis({ hoursBack: 72, maxGroups: 1 });
       console.log(`✅ Synthesis done: generated=${result.generated}`);
     } catch (error) {
       console.error("❌ Synthesis cron error:", error.message);
@@ -57,6 +57,6 @@ export async function startScheduler() {
   });
 
   console.log(
-    "📅 Scheduler ready — ingestion every 30 min, synthesis at 04:00",
+    "📅 Scheduler ready — ingestion at 03:00 & 15:00 UTC, synthesis at 04:00 UTC (1 article/day)",
   );
 }

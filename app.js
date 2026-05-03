@@ -10,7 +10,7 @@ import trendRoutes from "./modules/trends/trends.routes.js";
 import newsRoutes from "./modules/news/news.routes.js";
 import briefingRoutes from "./modules/briefing/briefing.routes.js";
 import ingestionRoutes from "./modules/ingestion/ingestion.routes.js";
-import synthesisRoutes from "./modules/synthesis/synthesis.routes.js"; // ← ДОБАВИТЬ
+import synthesisRoutes from "./modules/synthesis/synthesis.routes.js";
 
 import { startScheduler } from "./modules/scheduler/scheduler.js";
 
@@ -37,6 +37,7 @@ app.get("/", (req, res) =>
     status: "running",
   }),
 );
+
 let isSynthesisRunning = false;
 
 app.get("/api/synthesis/run-now", async (req, res) => {
@@ -47,7 +48,7 @@ app.get("/api/synthesis/run-now", async (req, res) => {
     isSynthesisRunning = true;
     const { runSynthesis } =
       await import("./modules/synthesis/synthesis.service.js");
-    const result = await runSynthesis({ hoursBack: 72, maxGroups: 2 });
+    const result = await runSynthesis({ hoursBack: 72, maxGroups: 1 });
     res.json({ success: true, ...result });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -55,11 +56,12 @@ app.get("/api/synthesis/run-now", async (req, res) => {
     isSynthesisRunning = false;
   }
 });
+
 app.use("/api/trends", trendRoutes);
 app.use("/api/news", newsRoutes);
 app.use("/api/briefing", briefingRoutes);
 app.use("/api/ingestion", ingestionRoutes);
-app.use("/api/synthesis", synthesisRoutes); // ← ДОБАВИТЬ
+app.use("/api/synthesis", synthesisRoutes);
 
 app.use((req, res) =>
   res.status(404).json({ success: false, message: "Route not found" }),
