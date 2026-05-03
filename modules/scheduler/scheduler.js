@@ -8,6 +8,13 @@ import { runSynthesis } from "../synthesis/synthesis.service.js";
 export async function startScheduler() {
   console.log("📅 Scheduler initializing...");
 
+  // ── Полное отключение фоновых задач ───────────────────
+  if (process.env.DISABLE_SCHEDULERS === "true") {
+    console.log("⏸  Schedulers DISABLED via DISABLE_SCHEDULERS=true");
+    console.log("   (на локалке фоновый ingestion и synthesis не запускаются)");
+    return;
+  }
+
   // 1. Синхронизируем источники
   try {
     const seedResult = await seedSourcesIfEmpty();
@@ -39,7 +46,6 @@ export async function startScheduler() {
   });
 
   // 4. Синтез каждый день в 04:00
-  // hoursBack=72 — берём новости за 3 дня, чтобы всегда был материал
   cron.schedule("0 4 * * *", async () => {
     console.log("🧠 Synthesis cron starting...");
     try {

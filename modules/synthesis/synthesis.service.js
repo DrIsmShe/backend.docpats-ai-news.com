@@ -3,7 +3,7 @@ import NewsItem from "../news/news.model.js";
 import Synthesis from "./synthesis.model.js";
 import { translateAllLocales } from "./synthesis.controller.js";
 import { generateAllSeo } from "./seo.service.js";
-const client = new Anthropic();
+const client = new Anthropic({ timeout: 1500000, maxRetries: 2 });
 
 // ─── ВСЕ МЕДИЦИНСКИЕ И НАУЧНЫЕ ОБЛАСТИ ───────────────────────
 const SPECIALTY_MAP = {

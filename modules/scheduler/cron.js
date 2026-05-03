@@ -3,9 +3,15 @@ import ingestionService from "../ingestion/ingestion.service.js";
 import { runSynthesis } from "../synthesis/synthesis.service.js";
 
 function startCronJobs() {
+  // ── Полное отключение фоновых задач ───────────────────
+  if (process.env.DISABLE_SCHEDULERS === "true") {
+    console.log("⏸  Legacy scheduler DISABLED via DISABLE_SCHEDULERS=true");
+    return;
+  }
+
   console.log("Scheduler started");
 
-  // Парсинг RSS — каждые 30 минут, без изменений
+  // Парсинг RSS — каждые 30 минут
   cron.schedule("*/30 * * * *", async () => {
     console.log("Running RSS ingestion...");
     try {
@@ -16,7 +22,7 @@ function startCronJobs() {
     }
   });
 
-  // Синтез статей — 3 раза в день: 8:00, 14:00, 20:00
+  // Синтез статей — 3 раза в день
   cron.schedule("0 8,14,20 * * *", async () => {
     console.log("[Synthesis] Запуск синтеза...");
     try {
