@@ -6,9 +6,11 @@ import { generateAllSeo } from "./seo.service.js";
 
 const client = new Anthropic({ timeout: 900_000, maxRetries: 2 });
 
+// Сколько дней назад искать "недавние" специальности, чтобы их не повторять
+const RECENT_SPECIALTY_DAYS = 7;
+
 // ─── ВСЕ МЕДИЦИНСКИЕ И НАУЧНЫЕ ОБЛАСТИ ───────────────────────
 const SPECIALTY_MAP = {
-  // Клинические специальности
   cardiology: "Кардиология",
   oncology: "Онкология",
   neurology: "Неврология",
@@ -54,8 +56,6 @@ const SPECIALTY_MAP = {
   cardiac_surgery: "Кардиохирургия",
   transplantology: "Трансплантология",
   plastic_surgery: "Пластическая хирургия",
-
-  // Фундаментальные науки
   genetics: "Генетика",
   genomics: "Геномика",
   proteomics: "Протеомика",
@@ -78,8 +78,6 @@ const SPECIALTY_MAP = {
   physiology: "Физиология",
   biophysics: "Биофизика",
   biostatistics: "Биостатистика",
-
-  // Прикладные науки и технологии
   bioinformatics: "Биоинформатика",
   bioengineering: "Биоинженерия",
   biotechnology: "Биотехнология",
@@ -95,8 +93,6 @@ const SPECIALTY_MAP = {
   gene_therapy: "Генная терапия",
   immunotherapy: "Иммунотерапия",
   microbiome: "Микробиом",
-
-  // Эпидемиология и общественное здравоохранение
   epidemiology: "Эпидемиология",
   public_health: "Общественное здравоохранение",
   global_health: "Глобальное здравоохранение",
@@ -105,8 +101,6 @@ const SPECIALTY_MAP = {
   nutrition: "Нутрициология",
   preventive: "Профилактическая медицина",
   vaccinology: "Вакцинология",
-
-  // Смежные науки
   neuropharmacology: "Нейрофармакология",
   psychopharmacology: "Психофармакология",
   cardiovascular: "Сердечно-сосудистые заболевания",
@@ -307,28 +301,51 @@ function normalizeAuthors(authors) {
   return String(authors);
 }
 
-function groupBySpecialty(items, maxGroups) {
+// ─── Группировка с anti-recent фильтром ──────────────────────
+// Раньше: всегда выигрывала самая многочисленная категория (онкология).
+// Теперь:
+//  1. Исключаем специальности, по которым уже была статья за RECENT_SPECIALTY_DAYS дней
+//  2. Среди оставшихся выбираем с весом sqrt(длины) + рандом — без жёсткой монополии
+function groupBySpecialty(items, maxGroups, excludeSet = new Set()) {
   const map = {};
   for (const item of items) {
     const raw = item.category || item.specialty || "general";
     const key = SPECIALTY_MAP[raw] || raw;
+    if (excludeSet.has(key)) continue;
     if (!map[key]) map[key] = [];
     map[key].push(item);
   }
 
-  return Object.entries(map)
-    .sort((a, b) => b[1].length - a[1].length + (Math.random() * 2 - 1))
-    .slice(0, maxGroups)
-    .map(([specialty, articles]) => ({
-      specialty,
-      articles: articles.sort(() => Math.random() - 0.5).slice(0, 6),
-    }));
+  const entries = Object.entries(map);
+
+  if (entries.length === 0) {
+    return null;
+  }
+
+  // sqrt смягчает разрыв: вместо 12 vs 3 (онкология побеждает 100%) даёт 3.46 vs 1.73
+  // плюс Math.random() (0..1) для шанса аутсайдеру
+  const weighted = entries.map(([specialty, articles]) => ({
+    specialty,
+    articles,
+    weight: Math.sqrt(articles.length) + Math.random(),
+  }));
+
+  weighted.sort((a, b) => b.weight - a.weight);
+
+  console.log(
+    `[Synthesis] Кандидаты: ${weighted
+      .slice(0, 5)
+      .map((w) => `${w.specialty}(${w.articles.length})`)
+      .join(", ")}`,
+  );
+
+  return weighted.slice(0, maxGroups).map(({ specialty, articles }) => ({
+    specialty,
+    articles: articles.sort(() => Math.random() - 0.5).slice(0, 6),
+  }));
 }
 
 // ─── Валидация качества сгенерированной статьи ──────────────
-// Защита от: обрыва генерации, loop'ов, поломанной markdown-структуры,
-// слишком короткого вывода. Если статья мусорная — лучше упасть и retry,
-// чем сохранить мусор в БД и отправить его в перевод на 4 языка.
 function validateGeneratedArticle(body, specialty) {
   if (!body || typeof body !== "string") {
     throw new Error(`Empty body for "${specialty}"`);
@@ -340,12 +357,10 @@ function validateGeneratedArticle(body, specialty) {
     );
   }
 
-  // 30+ одинаковых символов подряд = модель ушла в loop
   if (/(.)\1{30,}/.test(body)) {
     throw new Error(`Detected character loop in article for "${specialty}"`);
   }
 
-  // Markdown структура — должно быть минимум 4 раздела ##
   const headerCount = (body.match(/^##\s+/gm) || []).length;
   if (headerCount < 4) {
     throw new Error(
@@ -353,12 +368,10 @@ function validateGeneratedArticle(body, specialty) {
     );
   }
 
-  // Должен быть заголовок верхнего уровня
   if (!/^#\s+/m.test(body)) {
     throw new Error(`Missing # title for "${specialty}"`);
   }
 
-  // Минимум слов — промпт требует 5000, принимаем от 3000
   const wordCount = body.split(/\s+/).filter(Boolean).length;
   if (wordCount < 3000) {
     throw new Error(
@@ -445,9 +458,6 @@ ${sourcesText}
 
   console.log(`[Synthesis] "${specialty}" | ${style.group} → ${style.name}`);
 
-  // ── Retry с валидацией ──────────────────────────────────────
-  // Если Claude вернул обрезанную/loop/слишком короткую статью —
-  // не сохраняем мусор в БД, делаем повторный вызов (до 2 раз).
   const maxAttempts = 2;
   let body = null;
   let validationStats = null;
@@ -481,7 +491,6 @@ ${sourcesText}
         `[Synthesis] ${prefix} "${specialty}" попытка ${attempt + 1}/${maxAttempts + 1}: ${err.message}`,
       );
       if (isLast) throw err;
-      // Пауза перед retry — 15s
       await new Promise((r) => setTimeout(r, 15000));
     }
   }
@@ -505,12 +514,10 @@ ${sourcesText}
     })),
   });
 
-  // Фоном — SEO (не блокируем)
   generateAllSeo(saved._id, saved.title, saved.body).catch((err) =>
     console.error("[Synthesis] SEO generation error:", err.message),
   );
 
-  // Фоном — переводы (не блокируем)
   translateAllLocales(saved).catch((err) =>
     console.error("[Synthesis] Background translate error:", err.message),
   );
@@ -518,13 +525,9 @@ ${sourcesText}
   return saved;
 }
 
-// ─── УМНЫЙ ПОДБОР НОВОСТЕЙ ────────────────────────────────────
-// 1. Сначала берём свежие (за hoursBack часов)
-// 2. Если мало — добираем из всей базы (разные специальности)
 async function fetchNewsForSynthesis(hoursBack) {
   const since = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
 
-  // Свежие новости
   let items = await NewsItem.find({ createdAt: { $gte: since } })
     .sort({ createdAt: -1 })
     .limit(100)
@@ -537,7 +540,6 @@ async function fetchNewsForSynthesis(hoursBack) {
     return items;
   }
 
-  // Мало свежих — берём из всей базы, случайную выборку чтобы не повторяться
   console.log(
     `[Synthesis] Свежих мало (${items.length}), добираем из всей базы...`,
   );
@@ -547,13 +549,21 @@ async function fetchNewsForSynthesis(hoursBack) {
     .limit(500)
     .lean();
 
-  // Перемешиваем чтобы каждый раз синтезировались разные темы
   const shuffled = allItems.sort(() => Math.random() - 0.5).slice(0, 200);
 
   console.log(
     `[Synthesis] Итого для синтеза: ${shuffled.length} новостей из базы`,
   );
   return shuffled;
+}
+
+// ─── Получить специальности использованные за последние N дней ──
+async function getRecentSpecialties(days = RECENT_SPECIALTY_DAYS) {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const recent = await Synthesis.distinct("specialty", {
+    createdAt: { $gte: since },
+  });
+  return new Set(recent);
 }
 
 export async function runSynthesis({ hoursBack = 72, maxGroups = 1 } = {}) {
@@ -564,11 +574,32 @@ export async function runSynthesis({ hoursBack = 72, maxGroups = 1 } = {}) {
     return { generated: 0 };
   }
 
-  const groups = groupBySpecialty(items, maxGroups);
+  // Anti-recent фильтр: не повторяем специальности, использованные за 7 дней
+  const recentSet = await getRecentSpecialties();
+  console.log(
+    `[Synthesis] Исключены за ${RECENT_SPECIALTY_DAYS} дней: ${[...recentSet].join(", ") || "(ничего)"}`,
+  );
+
+  let groups = groupBySpecialty(items, maxGroups, recentSet);
+
+  // Fallback: все 100+ специальностей за неделю использованы (маловероятно) —
+  // или новости категоризированы только в недавно использованные категории.
+  // Тогда снимаем фильтр и генерим что есть.
+  if (!groups || groups.length === 0) {
+    console.log(
+      "[Synthesis] Fallback: все доступные специальности недавно использовались, снимаем фильтр",
+    );
+    groups = groupBySpecialty(items, maxGroups, new Set());
+  }
+
+  if (!groups || groups.length === 0) {
+    console.log("[Synthesis] Группы не найдены — нет новостей с категориями");
+    return { generated: 0 };
+  }
+
   let generated = 0;
 
   for (const { specialty, articles } of groups) {
-    // Не генерируем если уже есть статья по этой теме за последние 6 часов
     const exists = await Synthesis.findOne({
       specialty,
       createdAt: { $gte: new Date(Date.now() - 6 * 60 * 60 * 1000) },
