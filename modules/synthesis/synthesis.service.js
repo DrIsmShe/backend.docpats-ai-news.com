@@ -10,7 +10,10 @@ const client = new Anthropic({ timeout: 900_000, maxRetries: 2 });
 const RECENT_SPECIALTY_DAYS = 7;
 
 // ─── ВСЕ МЕДИЦИНСКИЕ И НАУЧНЫЕ ОБЛАСТИ ───────────────────────
+// Алиасы (ent, infectious-disease, allergy) добавлены под реальные значения
+// в БД новостей (см. поле specialties[] в коллекции news).
 const SPECIALTY_MAP = {
+  // Клинические специальности
   cardiology: "Кардиология",
   oncology: "Онкология",
   neurology: "Неврология",
@@ -20,6 +23,7 @@ const SPECIALTY_MAP = {
   endocrinology: "Эндокринология",
   diabetology: "Диабетология",
   infectious: "Инфекционные болезни",
+  "infectious-disease": "Инфекционные болезни",
   surgery: "Хирургия",
   orthopedics: "Ортопедия",
   traumatology: "Травматология",
@@ -36,11 +40,13 @@ const SPECIALTY_MAP = {
   dermatology: "Дерматология",
   ophthalmology: "Офтальмология",
   otolaryngology: "Оториноларингология",
+  ent: "Оториноларингология",
   dentistry: "Стоматология",
   rheumatology: "Ревматология",
   hematology: "Гематология",
   immunology: "Иммунология",
   allergology: "Аллергология",
+  allergy: "Аллергология",
   radiology: "Радиология",
   radiotherapy: "Радиотерапия",
   anesthesiology: "Анестезиология",
@@ -56,6 +62,8 @@ const SPECIALTY_MAP = {
   cardiac_surgery: "Кардиохирургия",
   transplantology: "Трансплантология",
   plastic_surgery: "Пластическая хирургия",
+
+  // Фундаментальные науки
   genetics: "Генетика",
   genomics: "Геномика",
   proteomics: "Протеомика",
@@ -78,6 +86,8 @@ const SPECIALTY_MAP = {
   physiology: "Физиология",
   biophysics: "Биофизика",
   biostatistics: "Биостатистика",
+
+  // Прикладные науки и технологии
   bioinformatics: "Биоинформатика",
   bioengineering: "Биоинженерия",
   biotechnology: "Биотехнология",
@@ -93,6 +103,8 @@ const SPECIALTY_MAP = {
   gene_therapy: "Генная терапия",
   immunotherapy: "Иммунотерапия",
   microbiome: "Микробиом",
+
+  // Эпидемиология и общественное здравоохранение
   epidemiology: "Эпидемиология",
   public_health: "Общественное здравоохранение",
   global_health: "Глобальное здравоохранение",
@@ -101,6 +113,8 @@ const SPECIALTY_MAP = {
   nutrition: "Нутрициология",
   preventive: "Профилактическая медицина",
   vaccinology: "Вакцинология",
+
+  // Смежные науки
   neuropharmacology: "Нейрофармакология",
   psychopharmacology: "Психофармакология",
   cardiovascular: "Сердечно-сосудистые заболевания",
@@ -301,29 +315,52 @@ function normalizeAuthors(authors) {
   return String(authors);
 }
 
+// ─── Извлечь все специальности из news-item ──────────────────
+// Приоритет:
+//   1. specialties[] (массив, заполнен AI-классификатором, 28 категорий в БД)
+//   2. specialty (одна, старый классификатор) — fallback
+//   3. categoryPrimary — последний fallback
+// Возвращает массив строк (русские названия из SPECIALTY_MAP).
+function extractSpecialties(item) {
+  const raw = [];
+
+  if (Array.isArray(item.specialties) && item.specialties.length > 0) {
+    raw.push(...item.specialties);
+  } else if (item.specialty) {
+    raw.push(item.specialty);
+  } else if (item.categoryPrimary && item.categoryPrimary !== "general") {
+    raw.push(item.categoryPrimary);
+  } else {
+    raw.push("general");
+  }
+
+  // Маппим в русские названия, дедуплицируем
+  const mapped = new Set();
+  for (const r of raw) {
+    const name = SPECIALTY_MAP[r] || r;
+    mapped.add(name);
+  }
+  return [...mapped];
+}
+
 // ─── Группировка с anti-recent фильтром ──────────────────────
-// Раньше: всегда выигрывала самая многочисленная категория (онкология).
-// Теперь:
-//  1. Исключаем специальности, по которым уже была статья за RECENT_SPECIALTY_DAYS дней
-//  2. Среди оставшихся выбираем с весом sqrt(длины) + рандом — без жёсткой монополии
+// Один news-item теперь может попадать в НЕСКОЛЬКО групп
+// (если в specialties[] лежит несколько значений).
 function groupBySpecialty(items, maxGroups, excludeSet = new Set()) {
   const map = {};
   for (const item of items) {
-    const raw = item.category || item.specialty || "general";
-    const key = SPECIALTY_MAP[raw] || raw;
-    if (excludeSet.has(key)) continue;
-    if (!map[key]) map[key] = [];
-    map[key].push(item);
+    const specs = extractSpecialties(item);
+    for (const s of specs) {
+      if (excludeSet.has(s)) continue;
+      if (!map[s]) map[s] = [];
+      map[s].push(item);
+    }
   }
 
   const entries = Object.entries(map);
+  if (entries.length === 0) return null;
 
-  if (entries.length === 0) {
-    return null;
-  }
-
-  // sqrt смягчает разрыв: вместо 12 vs 3 (онкология побеждает 100%) даёт 3.46 vs 1.73
-  // плюс Math.random() (0..1) для шанса аутсайдеру
+  // sqrt смягчает разрыв, рандом даёт шанс маленьким группам
   const weighted = entries.map(([specialty, articles]) => ({
     specialty,
     articles,
@@ -333,10 +370,10 @@ function groupBySpecialty(items, maxGroups, excludeSet = new Set()) {
   weighted.sort((a, b) => b.weight - a.weight);
 
   console.log(
-    `[Synthesis] Кандидаты: ${weighted
-      .slice(0, 5)
+    `[Synthesis] Кандидаты (${weighted.length}): ${weighted
+      .slice(0, 8)
       .map((w) => `${w.specialty}(${w.articles.length})`)
-      .join(", ")}`,
+      .join(", ")}${weighted.length > 8 ? "..." : ""}`,
   );
 
   return weighted.slice(0, maxGroups).map(({ specialty, articles }) => ({
@@ -406,9 +443,9 @@ async function generateAndSave(specialty, articles) {
     .map((a, i) =>
       `
 [${i + 1}] "${a.title}"
-URL: ${a.url || a.link || "-"}
+URL: ${a.url || a.link || a.canonicalUrl || "-"}
 Авторы: ${normalizeAuthors(a.authors) || "не указаны"}
-${a.description ? "Аннотация: " + a.description.slice(0, 500) : ""}
+${a.summary ? "Аннотация: " + a.summary.slice(0, 500) : a.description ? "Аннотация: " + a.description.slice(0, 500) : ""}
 `.trim(),
     )
     .join("\n\n");
@@ -508,7 +545,7 @@ ${sourcesText}
     author: "Доктор Исмаил",
     sources: articles.map((a) => ({
       title: a.title,
-      url: a.url || a.link,
+      url: a.url || a.link || a.canonicalUrl,
       authors: normalizeAuthors(a.authors),
       year: new Date(a.publishedAt || a.createdAt || Date.now()).getFullYear(),
     })),
@@ -574,7 +611,6 @@ export async function runSynthesis({ hoursBack = 72, maxGroups = 1 } = {}) {
     return { generated: 0 };
   }
 
-  // Anti-recent фильтр: не повторяем специальности, использованные за 7 дней
   const recentSet = await getRecentSpecialties();
   console.log(
     `[Synthesis] Исключены за ${RECENT_SPECIALTY_DAYS} дней: ${[...recentSet].join(", ") || "(ничего)"}`,
@@ -582,9 +618,6 @@ export async function runSynthesis({ hoursBack = 72, maxGroups = 1 } = {}) {
 
   let groups = groupBySpecialty(items, maxGroups, recentSet);
 
-  // Fallback: все 100+ специальностей за неделю использованы (маловероятно) —
-  // или новости категоризированы только в недавно использованные категории.
-  // Тогда снимаем фильтр и генерим что есть.
   if (!groups || groups.length === 0) {
     console.log(
       "[Synthesis] Fallback: все доступные специальности недавно использовались, снимаем фильтр",
