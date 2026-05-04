@@ -3,7 +3,8 @@ import NewsItem from "../news/news.model.js";
 import Synthesis from "./synthesis.model.js";
 import { translateAllLocales } from "./synthesis.controller.js";
 import { generateAllSeo } from "./seo.service.js";
-const client = new Anthropic({ timeout: 1500000, maxRetries: 2 });
+
+const client = new Anthropic({ timeout: 900_000, maxRetries: 2 });
 
 // ─── ВСЕ МЕДИЦИНСКИЕ И НАУЧНЫЕ ОБЛАСТИ ───────────────────────
 const SPECIALTY_MAP = {
@@ -324,6 +325,50 @@ function groupBySpecialty(items, maxGroups) {
     }));
 }
 
+// ─── Валидация качества сгенерированной статьи ──────────────
+// Защита от: обрыва генерации, loop'ов, поломанной markdown-структуры,
+// слишком короткого вывода. Если статья мусорная — лучше упасть и retry,
+// чем сохранить мусор в БД и отправить его в перевод на 4 языка.
+function validateGeneratedArticle(body, specialty) {
+  if (!body || typeof body !== "string") {
+    throw new Error(`Empty body for "${specialty}"`);
+  }
+
+  if (body.length < 5000) {
+    throw new Error(
+      `Article too short: ${body.length} chars for "${specialty}" (need 5000+)`,
+    );
+  }
+
+  // 30+ одинаковых символов подряд = модель ушла в loop
+  if (/(.)\1{30,}/.test(body)) {
+    throw new Error(`Detected character loop in article for "${specialty}"`);
+  }
+
+  // Markdown структура — должно быть минимум 4 раздела ##
+  const headerCount = (body.match(/^##\s+/gm) || []).length;
+  if (headerCount < 4) {
+    throw new Error(
+      `Markdown structure broken: only ${headerCount} ## headers for "${specialty}" (need 4+)`,
+    );
+  }
+
+  // Должен быть заголовок верхнего уровня
+  if (!/^#\s+/m.test(body)) {
+    throw new Error(`Missing # title for "${specialty}"`);
+  }
+
+  // Минимум слов — промпт требует 5000, принимаем от 3000
+  const wordCount = body.split(/\s+/).filter(Boolean).length;
+  if (wordCount < 3000) {
+    throw new Error(
+      `Article too short: ${wordCount} words for "${specialty}" (need 3000+)`,
+    );
+  }
+
+  return { wordCount, headerCount };
+}
+
 async function generateAndSave(specialty, articles) {
   const style = ARTICLE_STYLES[styleIndex % ARTICLE_STYLES.length];
   styleIndex++;
@@ -400,27 +445,56 @@ ${sourcesText}
 
   console.log(`[Synthesis] "${specialty}" | ${style.group} → ${style.name}`);
 
-  const message = await client.messages.create({
-    model: "claude-sonnet-4-5",
-    max_tokens: 16000,
-    messages: [{ role: "user", content: prompt }],
-  });
+  // ── Retry с валидацией ──────────────────────────────────────
+  // Если Claude вернул обрезанную/loop/слишком короткую статью —
+  // не сохраняем мусор в БД, делаем повторный вызов (до 2 раз).
+  const maxAttempts = 2;
+  let body = null;
+  let validationStats = null;
 
-  if (!message.content || !message.content[0] || !message.content[0].text) {
-    throw new Error(`Пустой ответ от API для "${specialty}"`);
+  for (let attempt = 0; attempt <= maxAttempts; attempt++) {
+    const startTime = Date.now();
+    try {
+      const message = await client.messages.create({
+        model: "claude-sonnet-4-5",
+        max_tokens: 16000,
+        messages: [{ role: "user", content: prompt }],
+      });
+
+      if (!message.content?.[0]?.text) {
+        throw new Error(`Пустой ответ от API для "${specialty}"`);
+      }
+
+      const candidate = message.content[0].text;
+      validationStats = validateGeneratedArticle(candidate, specialty);
+      body = candidate;
+
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      console.log(
+        `[Synthesis] ✓ "${specialty}" сгенерирована: ${validationStats.wordCount} слов, ${validationStats.headerCount} разделов, ${elapsed}s`,
+      );
+      break;
+    } catch (err) {
+      const isLast = attempt === maxAttempts;
+      const prefix = isLast ? "✗" : "⚠";
+      console.error(
+        `[Synthesis] ${prefix} "${specialty}" попытка ${attempt + 1}/${maxAttempts + 1}: ${err.message}`,
+      );
+      if (isLast) throw err;
+      // Пауза перед retry — 15s
+      await new Promise((r) => setTimeout(r, 15000));
+    }
   }
 
-  const body = message.content[0].text;
   const titleMatch = body.match(/^#\s+(.+)/m);
   const title = titleMatch ? titleMatch[1].trim() : `Обзор: ${specialty}`;
-  const wordCount = body.split(/\s+/).filter(Boolean).length;
 
   const saved = await Synthesis.create({
     title,
     body,
     specialty,
     language: "ru",
-    wordCount,
+    wordCount: validationStats.wordCount,
     style: style.name,
     author: "Доктор Исмаил",
     sources: articles.map((a) => ({
@@ -430,13 +504,13 @@ ${sourcesText}
       year: new Date(a.publishedAt || a.createdAt || Date.now()).getFullYear(),
     })),
   });
-  // Фоном — не блокируем
-  // Фоном — SEO
+
+  // Фоном — SEO (не блокируем)
   generateAllSeo(saved._id, saved.title, saved.body).catch((err) =>
     console.error("[Synthesis] SEO generation error:", err.message),
   );
 
-  // Фоном — переводы
+  // Фоном — переводы (не блокируем)
   translateAllLocales(saved).catch((err) =>
     console.error("[Synthesis] Background translate error:", err.message),
   );

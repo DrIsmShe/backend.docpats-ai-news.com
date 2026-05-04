@@ -10,7 +10,9 @@ const LOCALE_NAMES = {
 
 const SUPPORTED_LOCALES = Object.keys(LOCALE_NAMES);
 
-const anthropic = new Anthropic({ timeout: 300_000 });
+// Таймаут 15 минут — длинные AR/TR переводы могут занимать 8-12 минут.
+// maxRetries: 0 — мы делаем retry вручную с валидацией качества вывода.
+const anthropic = new Anthropic({ timeout: 900_000, maxRetries: 0 });
 
 // ─── Перевод одной статьи через Claude (один вызов) ──────────
 async function translateSynthesisArticle(title, body, locale) {
@@ -45,17 +47,38 @@ ${body}`,
   return { title: translatedTitle, body: translated };
 }
 
-// ─── Фоновый перевод на все языки ────────────────────────────
-export async function translateAllLocales(article) {
-  const locales = Object.keys(LOCALE_NAMES);
+// ─── Валидация качества перевода ─────────────────────────────
+// Защита от: loop с повторяющимися символами (как был с AR-диакритиком),
+// обрыва на полпути, мусорного/пустого вывода.
+function validateTranslation(translated, locale) {
+  if (!translated.body || translated.body.length < 1000) {
+    throw new Error(
+      `Output too short (${translated.body?.length || 0} chars) for ${locale}`,
+    );
+  }
 
-  console.log(
-    `[Synthesis:prefetch] Начинаем перевод "${article.title.slice(0, 50)}..." на ${locales.join(", ")}`,
-  );
+  // 30+ одинаковых символов подряд = модель ушла в loop
+  if (/(.)\1{30,}/.test(translated.body)) {
+    throw new Error(`Detected character loop in ${locale} output`);
+  }
 
-  for (const locale of locales) {
+  // Markdown структура — должно быть минимум 3 раздела ##
+  const headerCount = (translated.body.match(/^##\s+/gm) || []).length;
+  if (headerCount < 3) {
+    throw new Error(
+      `Markdown structure broken: only ${headerCount} ## headers in ${locale}`,
+    );
+  }
+
+  return true;
+}
+
+// ─── Перевод одной локали с retry и валидацией ────────────────
+async function translateOne(article, locale, retries = 2) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const label = attempt === 0 ? locale : `${locale} (retry ${attempt})`;
     try {
-      console.log(`[Synthesis:prefetch] → ${locale}...`);
+      console.log(`[Synthesis:prefetch] → ${label}...`);
 
       const translated = await translateSynthesisArticle(
         article.title,
@@ -63,8 +86,16 @@ export async function translateAllLocales(article) {
         locale,
       );
 
+      validateTranslation(translated, locale);
+
+      // Свежий fetch — на случай параллельных сохранений других локалей
       const doc = await Synthesis.findById(article._id);
-      if (!doc) break;
+      if (!doc) {
+        console.warn(
+          `[Synthesis:prefetch] ⚠ Article ${article._id} deleted, abort ${locale}`,
+        );
+        return;
+      }
 
       doc.translations.set(locale, {
         title: translated.title,
@@ -73,13 +104,52 @@ export async function translateAllLocales(article) {
       });
       await doc.save();
 
-      console.log(`[Synthesis:prefetch] ✓ ${locale} готов`);
+      console.log(
+        `[Synthesis:prefetch] ✓ ${locale} готов (${translated.body.length} chars)`,
+      );
+      return;
     } catch (err) {
-      console.error(`[Synthesis:prefetch] ✗ ${locale}:`, err.message);
+      const isLast = attempt === retries;
+      const prefix = isLast ? "✗" : "⚠";
+      console.error(`[Synthesis:prefetch] ${prefix} ${label}: ${err.message}`);
+      if (isLast) throw err;
+      // Linear backoff: 5s → 10s
+      await new Promise((r) => setTimeout(r, 5000 * (attempt + 1)));
     }
   }
+}
 
-  console.log(`[Synthesis:prefetch] Все переводы завершены: ${article._id}`);
+// ─── Фоновый перевод на все языки (параллельно) ──────────────
+export async function translateAllLocales(article) {
+  const locales = Object.keys(LOCALE_NAMES);
+
+  console.log(
+    `[Synthesis:prefetch] Начинаем перевод "${article.title.slice(0, 50)}..." на ${locales.join(", ")} (параллельно)`,
+  );
+
+  const startTime = Date.now();
+
+  // Параллельный запуск — все локали идут одновременно через Promise.allSettled
+  // (раньше был for...of await — последовательно, общее время суммировалось)
+  const results = await Promise.allSettled(
+    locales.map((locale) => translateOne(article, locale)),
+  );
+
+  const elapsed = Math.round((Date.now() - startTime) / 1000);
+  const succeeded = results.filter((r) => r.status === "fulfilled").length;
+  const failedLocales = results
+    .map((r, i) => (r.status === "rejected" ? locales[i] : null))
+    .filter(Boolean);
+
+  console.log(
+    `[Synthesis:prefetch] Все переводы завершены: ${article._id} (${succeeded}/${results.length} успешно за ${elapsed}s)`,
+  );
+
+  if (failedLocales.length > 0) {
+    console.warn(
+      `[Synthesis:prefetch] ⚠ Не удалось перевести: ${failedLocales.join(", ")} — нужен retranslate`,
+    );
+  }
 }
 
 // ─── GET /api/synthesis — список карточек ────────────────────
