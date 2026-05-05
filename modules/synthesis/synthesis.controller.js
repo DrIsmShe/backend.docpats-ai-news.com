@@ -10,8 +10,12 @@ const LOCALE_NAMES = {
 
 const SUPPORTED_LOCALES = Object.keys(LOCALE_NAMES);
 
+// Дефолтный размер страницы для списка статей.
+// Фронт может передавать свой ?limit=N, но не больше MAX_PAGE_SIZE.
+const DEFAULT_PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 100;
+
 // Таймаут 15 минут — длинные AR/TR переводы могут занимать 8-12 минут.
-// maxRetries: 0 — мы делаем retry вручную с валидацией качества вывода.
 const anthropic = new Anthropic({ timeout: 900_000, maxRetries: 0 });
 
 // ─── Перевод одной статьи через Claude (один вызов) ──────────
@@ -47,9 +51,6 @@ ${body}`,
   return { title: translatedTitle, body: translated };
 }
 
-// ─── Валидация качества перевода ─────────────────────────────
-// Защита от: loop с повторяющимися символами (как был с AR-диакритиком),
-// обрыва на полпути, мусорного/пустого вывода.
 function validateTranslation(translated, locale) {
   if (!translated.body || translated.body.length < 1000) {
     throw new Error(
@@ -57,12 +58,10 @@ function validateTranslation(translated, locale) {
     );
   }
 
-  // 30+ одинаковых символов подряд = модель ушла в loop
   if (/(.)\1{30,}/.test(translated.body)) {
     throw new Error(`Detected character loop in ${locale} output`);
   }
 
-  // Markdown структура — должно быть минимум 3 раздела ##
   const headerCount = (translated.body.match(/^##\s+/gm) || []).length;
   if (headerCount < 3) {
     throw new Error(
@@ -73,7 +72,21 @@ function validateTranslation(translated, locale) {
   return true;
 }
 
-// ─── Перевод одной локали с retry и валидацией ────────────────
+async function saveTranslation(articleId, locale, translatedTitle, body) {
+  await Synthesis.updateOne(
+    { _id: articleId },
+    {
+      $set: {
+        [`translations.${locale}`]: {
+          title: translatedTitle,
+          body,
+          translatedAt: new Date(),
+        },
+      },
+    },
+  );
+}
+
 async function translateOne(article, locale, retries = 2) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     const label = attempt === 0 ? locale : `${locale} (retry ${attempt})`;
@@ -88,21 +101,12 @@ async function translateOne(article, locale, retries = 2) {
 
       validateTranslation(translated, locale);
 
-      // Свежий fetch — на случай параллельных сохранений других локалей
-      const doc = await Synthesis.findById(article._id);
-      if (!doc) {
-        console.warn(
-          `[Synthesis:prefetch] ⚠ Article ${article._id} deleted, abort ${locale}`,
-        );
-        return;
-      }
-
-      doc.translations.set(locale, {
-        title: translated.title,
-        body: translated.body,
-        translatedAt: new Date(),
-      });
-      await doc.save();
+      await saveTranslation(
+        article._id,
+        locale,
+        translated.title,
+        translated.body,
+      );
 
       console.log(
         `[Synthesis:prefetch] ✓ ${locale} готов (${translated.body.length} chars)`,
@@ -111,15 +115,15 @@ async function translateOne(article, locale, retries = 2) {
     } catch (err) {
       const isLast = attempt === retries;
       const prefix = isLast ? "✗" : "⚠";
-      console.error(`[Synthesis:prefetch] ${prefix} ${label}: ${err.message}`);
+      console.error(
+        `[Synthesis:prefetch] ${prefix} ${label}: ${err.message}`,
+      );
       if (isLast) throw err;
-      // Linear backoff: 5s → 10s
       await new Promise((r) => setTimeout(r, 5000 * (attempt + 1)));
     }
   }
 }
 
-// ─── Фоновый перевод на все языки (параллельно) ──────────────
 export async function translateAllLocales(article) {
   const locales = Object.keys(LOCALE_NAMES);
 
@@ -129,8 +133,6 @@ export async function translateAllLocales(article) {
 
   const startTime = Date.now();
 
-  // Параллельный запуск — все локали идут одновременно через Promise.allSettled
-  // (раньше был for...of await — последовательно, общее время суммировалось)
   const results = await Promise.allSettled(
     locales.map((locale) => translateOne(article, locale)),
   );
@@ -152,11 +154,23 @@ export async function translateAllLocales(article) {
   }
 }
 
-// ─── GET /api/synthesis — список карточек ────────────────────
-// Поддерживает ?locale=en|az|tr|ar — возвращает переведённые заголовки
+// ─── GET /api/synthesis — список с пагинацией для lazy load ──
+// Параметры query:
+//   page=1 (default 1)
+//   limit=25 (default 25, cap 100)
+//   specialty (optional)
+//   locale (en|az|tr|ar — для подмены title переводом из кэша)
+// Ответ:
+//   { success, articles, total, page, limit, totalPages, hasMore }
 export async function getList(req, res) {
   try {
-    const { specialty, page = 1, limit = 10, locale } = req.query;
+    const { specialty, locale } = req.query;
+
+    // Безопасный парсинг page/limit с защитой от мусора
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const requestedLimit = parseInt(req.query.limit) || DEFAULT_PAGE_SIZE;
+    const limit = Math.min(Math.max(requestedLimit, 1), MAX_PAGE_SIZE);
+
     const filter = { status: "published" };
     if (specialty) filter.specialty = specialty;
 
@@ -166,27 +180,36 @@ export async function getList(req, res) {
     const [articles, total] = await Promise.all([
       Synthesis.find(filter)
         .sort({ createdAt: -1 })
-        .skip((+page - 1) * +limit)
-        .limit(+limit)
-        // Если нужен перевод — грузим translations (только заголовки там лёгкие)
+        .skip((page - 1) * limit)
+        .limit(limit)
         .select(needsTranslation ? "-body" : "-body -translations")
         .lean(),
       Synthesis.countDocuments(filter),
     ]);
 
-    // Подменяем title на переведённый если есть в кэше
     const mapped = needsTranslation
       ? articles.map((a) => {
           const cached = a.translations?.[locale];
           return {
             ...a,
             title: cached?.title || a.title,
-            translations: undefined, // не гоним тяжёлые поля клиенту
+            translations: undefined,
           };
         })
       : articles;
 
-    res.json({ success: true, articles: mapped, total, page: +page });
+    const totalPages = Math.ceil(total / limit);
+    const hasMore = page < totalPages;
+
+    res.json({
+      success: true,
+      articles: mapped,
+      total,        // реальное число статей в БД (для lazy load и счётчика)
+      page,
+      limit,
+      totalPages,
+      hasMore,      // фронт смотрит сюда: подгружать ли ещё
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -236,22 +259,9 @@ export async function translateArticle(req, res) {
       });
     }
 
-    // ── 2. Свежая статья < 40 мин — перевод ещё идёт в фоне
-    const ageMin = (Date.now() - new Date(article.createdAt)) / 60000;
-    if (ageMin < 40) {
-      console.log(
-        `[Synthesis:translate] Pending (${Math.round(ageMin)} мин): ${article._id} → ${locale}`,
-      );
-      return res.json({
-        success: true,
-        translationPending: true,
-        translated: { title: article.title, body: article.body },
-      });
-    }
-
-    // ── 3. Старая статья без перевода — SSE стриминг ────────
+    // ── 2. Кэша нет — SSE стрим (живой перевод) ─────────────
     console.log(
-      `[Synthesis:translate] SSE fallback: ${article._id} → ${locale}`,
+      `[Synthesis:translate] SSE streaming: ${article._id} → ${locale}`,
     );
 
     res.setHeader("Content-Type", "text/event-stream");
@@ -263,14 +273,20 @@ export async function translateArticle(req, res) {
     const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
     let fullText = "";
+    let clientClosed = false;
 
-    const stream = anthropic.messages.stream({
-      model: "claude-sonnet-4-5",
-      max_tokens: 16000,
-      messages: [
-        {
-          role: "user",
-          content: `Translate this medical article from Russian to ${LOCALE_NAMES[locale]}.
+    req.on("close", () => {
+      clientClosed = true;
+    });
+
+    try {
+      const stream = anthropic.messages.stream({
+        model: "claude-sonnet-4-5",
+        max_tokens: 16000,
+        messages: [
+          {
+            role: "user",
+            content: `Translate this medical article from Russian to ${LOCALE_NAMES[locale]}.
 
 STRICT RULES:
 - Preserve ALL markdown exactly: #, ##, ###, **, *, lists, etc.
@@ -282,19 +298,31 @@ ARTICLE:
 # ${article.title}
 
 ${article.body}`,
-        },
-      ],
-    });
+          },
+        ],
+      });
 
-    for await (const event of stream) {
-      if (
-        event.type === "content_block_delta" &&
-        event.delta?.type === "text_delta"
-      ) {
-        const chunk = event.delta.text;
-        fullText += chunk;
-        send({ chunk });
+      for await (const event of stream) {
+        if (clientClosed) break;
+        if (
+          event.type === "content_block_delta" &&
+          event.delta?.type === "text_delta"
+        ) {
+          const chunk = event.delta.text;
+          fullText += chunk;
+          send({ chunk });
+        }
       }
+    } catch (streamErr) {
+      console.error(
+        `[Synthesis:translate] Stream error ${article._id}/${locale}:`,
+        streamErr.message,
+      );
+      if (!res.writableEnded) {
+        send({ error: streamErr.message });
+        res.end();
+      }
+      return;
     }
 
     const firstLine = fullText.split("\n").find((l) => l.startsWith("# "));
@@ -302,20 +330,30 @@ ${article.body}`,
       ? firstLine.slice(2).trim()
       : article.title;
 
-    article.translations.set(locale, {
-      title: translatedTitle,
-      body: fullText,
-      translatedAt: new Date(),
-    });
-    await article.save();
+    if (fullText.length >= 1000) {
+      try {
+        await saveTranslation(article._id, locale, translatedTitle, fullText);
+        console.log(
+          `[Synthesis:translate] ✓ Cached after stream: ${article._id} → ${locale}`,
+        );
+      } catch (saveErr) {
+        console.error(
+          `[Synthesis:translate] Cache save error: ${saveErr.message}`,
+        );
+      }
+    }
 
-    send({ done: true, title: translatedTitle });
-    res.end();
+    if (!clientClosed && !res.writableEnded) {
+      send({ done: true, title: translatedTitle });
+      res.end();
+    }
   } catch (err) {
     console.error("[Synthesis:translate] Error:", err.message);
     if (res.headersSent) {
-      res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
-      res.end();
+      try {
+        res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+        res.end();
+      } catch {}
     } else {
       res.status(500).json({ success: false, message: err.message });
     }
