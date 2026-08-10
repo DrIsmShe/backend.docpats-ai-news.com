@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { openaiModel } from "../../config/ai.js";
 
 let client = null;
 
@@ -75,7 +76,7 @@ ${summary}
 
   try {
     const response = await client.chat.completions.create({
-      model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
+      model: openaiModel(),
       temperature: 0.2,
       messages: [
         {

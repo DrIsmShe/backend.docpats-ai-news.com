@@ -4,6 +4,10 @@ import { runIngestion } from "../ingestion/ingestion.service.js";
 import { seedSourcesIfEmpty } from "../sources/source.service.js";
 import { runSynthesis } from "../synthesis/synthesis.service.js";
 import Synthesis from "../synthesis/synthesis.model.js";
+import { withLock, LOCK_KEYS } from "../../utils/redisLock.js";
+
+// Тот же TTL, что у ручного запуска в app.js.
+const SYNTHESIS_LOCK_TTL_MS = 30 * 60 * 1000;
 
 export async function startScheduler() {
   console.log("📅 Scheduler initializing...");
@@ -59,7 +63,20 @@ export async function startScheduler() {
   const synthesisRun = async (label) => {
     console.log(`🧠 Synthesis cron starting (${label})...`);
     try {
-      const result = await runSynthesis({ hoursBack: 72, maxGroups: 1 });
+      // Блокировка общая с ручным запуском (POST /api/synthesis/run-now) и с
+      // догоняющими прогонами: если синтез уже идёт, второй запуск
+      // пропускается, а не оплачивается заново.
+      const { acquired, result } = await withLock(
+        LOCK_KEYS.synthesis,
+        SYNTHESIS_LOCK_TTL_MS,
+        () => runSynthesis({ hoursBack: 72, maxGroups: 1 }),
+      );
+
+      if (!acquired) {
+        console.log(`⏭  Synthesis cron skipped (${label}): уже выполняется`);
+        return;
+      }
+
       console.log(`✅ Synthesis done (${label}): generated=${result.generated}`);
     } catch (error) {
       console.error(`❌ Synthesis cron error (${label}):`, error.message);

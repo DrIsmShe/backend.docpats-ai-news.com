@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { embeddingModel } from "../../config/ai.js";
 
 let client = null;
 
@@ -21,7 +22,7 @@ export async function createEmbedding(text = "") {
 
   try {
     const response = await client.embeddings.create({
-      model: process.env.EMBEDDING_MODEL || "text-embedding-3-small",
+      model: embeddingModel(),
       input: text,
     });
 

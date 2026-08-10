@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 
+import { openaiModel } from "../../config/ai.js";
 import Cluster from "../clustering/cluster.model.js";
 import Briefing from "./briefing.model.js";
 
@@ -62,7 +63,7 @@ ${clusterText}
 
   try {
     const response = await client.chat.completions.create({
-      model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
+      model: openaiModel(),
       temperature: 0.2,
       messages: [
         {

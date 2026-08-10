@@ -14,6 +14,11 @@ import synthesisRoutes from "./modules/synthesis/synthesis.routes.js";
 import searchRoutes from "./modules/search/search.routes.js";
 
 import { startScheduler } from "./modules/scheduler/scheduler.js";
+import { requireInternalToken } from "./middlewares/internalAuth.js";
+import { withLock, LOCK_KEYS } from "./utils/redisLock.js";
+
+// Синтез может идти долго: до трёх попыток генерации с паузами между ними.
+const SYNTHESIS_LOCK_TTL_MS = 30 * 60 * 1000;
 
 const app = express();
 
@@ -39,24 +44,44 @@ app.get("/", (req, res) =>
   }),
 );
 
-let isSynthesisRunning = false;
-
-app.get("/api/synthesis/run-now", async (req, res) => {
-  if (isSynthesisRunning) {
-    return res.json({ success: false, message: "Already running" });
-  }
+// Запуск синтеза — POST, а не GET: генерация статьи меняет состояние и стоит
+// денег, а GET по адресу мог запустить кто угодно, кому ссылка попалась на
+// глаза, — краулер, префетч браузера, бот превью ссылок в мессенджере.
+app.post("/api/synthesis/run-now", requireInternalToken, async (req, res) => {
   try {
-    isSynthesisRunning = true;
-    const { runSynthesis } =
-      await import("./modules/synthesis/synthesis.service.js");
-    const result = await runSynthesis({ hoursBack: 72, maxGroups: 1 });
+    // Блокировка общая с ночным cron: ручной запуск во время работы крона
+    // (и наоборот) получит отказ вместо второй оплаченной генерации.
+    const { acquired, result } = await withLock(
+      LOCK_KEYS.synthesis,
+      SYNTHESIS_LOCK_TTL_MS,
+      async () => {
+        const { runSynthesis } = await import(
+          "./modules/synthesis/synthesis.service.js"
+        );
+        return runSynthesis({ hoursBack: 72, maxGroups: 1 });
+      },
+    );
+
+    if (!acquired) {
+      return res.status(409).json({ success: false, message: "Already running" });
+    }
+
     res.json({ success: true, ...result });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
-  } finally {
-    isSynthesisRunning = false;
   }
 });
+
+// Старый GET-адрес: отвечаем понятной ошибкой вместо 404, чтобы привычный
+// вызов из браузера не выглядел как «эндпоинт пропал». Работу не выполняет.
+app.get("/api/synthesis/run-now", (req, res) =>
+  res.status(405).set("Allow", "POST").json({
+    success: false,
+    message:
+      "Use POST /api/synthesis/run-now with the x-internal-token header. " +
+      "GET is disabled: article generation costs money and must not be triggered by a link preview or crawler.",
+  }),
+);
 
 app.use("/api/trends", trendRoutes);
 app.use("/api/news", newsRoutes);

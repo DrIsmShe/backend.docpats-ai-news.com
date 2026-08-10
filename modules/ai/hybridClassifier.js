@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { openaiModel } from "../../config/ai.js";
 
 // Клиент создаётся лениво — только при первом вызове classifyWithAI
 let _openai = null;
@@ -32,7 +33,7 @@ ${text}
 `;
   try {
     const response = await client.chat.completions.create({
-      model: "gpt-4.1-mini",
+      model: openaiModel(),
       messages: [{ role: "user", content: prompt }],
     });
     return JSON.parse(response.choices[0].message.content);

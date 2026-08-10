@@ -2,6 +2,7 @@ import News from "./news.model.js";
 import OpenAI from "openai";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import redis from "../../config/redis.js";
+import { openaiModel } from "../../config/ai.js";
 
 const LOCALE_NAMES = {
   ru: "Russian",
@@ -62,7 +63,7 @@ export async function translateContent(req, res) {
     console.log(`🤖 Translating via OpenAI: ${cacheKey}`);
     const client = getOpenAI();
     const result = await client.chat.completions.create({
-      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+      model: openaiModel(),
       messages: [
         {
           role: "user",
