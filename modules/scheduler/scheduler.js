@@ -3,6 +3,7 @@ import cron from "node-cron";
 import { runIngestion } from "../ingestion/ingestion.service.js";
 import { seedSourcesIfEmpty } from "../sources/source.service.js";
 import { runSynthesis } from "../synthesis/synthesis.service.js";
+import Synthesis from "../synthesis/synthesis.model.js";
 
 export async function startScheduler() {
   console.log("📅 Scheduler initializing...");
@@ -45,18 +46,49 @@ export async function startScheduler() {
     }
   });
 
-  // 4. Синтез — каждый день в 04:00 UTC, 1 статья в день
-  cron.schedule("0 4 * * *", async () => {
-    console.log("🧠 Synthesis cron starting...");
+  // 4. Синтез — ровно одна статья в сутки.
+  //
+  // Основной запуск в 04:00 UTC и два догоняющих: 10:00 и 16:00. Догоняющие
+  // работают ТОЛЬКО если за сегодня статьи так и не вышло. Раньше запуск был
+  // один, и сорвавшаяся попытка означала день без статьи — именно так вышло с
+  // 8 по 12 августа, когда генерация падала по таймауту, а cron исправно
+  // рапортовал об успехе с нулевым результатом.
+  //
+  // Условие смотрит в БАЗУ, а не в память процесса: перезапуск сервера не
+  // должен приводить ко второй статье за день.
+  const synthesisRun = async (label) => {
+    console.log(`🧠 Synthesis cron starting (${label})...`);
     try {
       const result = await runSynthesis({ hoursBack: 72, maxGroups: 1 });
-      console.log(`✅ Synthesis done: generated=${result.generated}`);
+      console.log(`✅ Synthesis done (${label}): generated=${result.generated}`);
     } catch (error) {
-      console.error("❌ Synthesis cron error:", error.message);
+      console.error(`❌ Synthesis cron error (${label}):`, error.message);
     }
-  });
+  };
+
+  cron.schedule("0 4 * * *", () => synthesisRun("основной"));
+
+  for (const hour of [10, 16]) {
+    cron.schedule(`0 ${hour} * * *`, async () => {
+      const startOfDay = new Date();
+      startOfDay.setUTCHours(0, 0, 0, 0);
+
+      const todayCount = await Synthesis.countDocuments({
+        createdAt: { $gte: startOfDay },
+      });
+
+      if (todayCount > 0) {
+        console.log(
+          `⏭  Synthesis catch-up at ${hour}:00 skipped — статья за сегодня уже есть`,
+        );
+        return;
+      }
+
+      await synthesisRun(`догон ${hour}:00`);
+    });
+  }
 
   console.log(
-    "📅 Scheduler ready — ingestion at 03:00 & 15:00 UTC, synthesis at 04:00 UTC (1 article/day)",
+    "📅 Scheduler ready — ingestion at 03:00 & 15:00 UTC, synthesis at 04:00 UTC with catch-up at 10:00 & 16:00 (1 article/day)",
   );
 }
