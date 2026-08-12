@@ -596,11 +596,19 @@ ${sourcesText}
   for (let attempt = 0; attempt <= maxAttempts; attempt++) {
     const startTime = Date.now();
     try {
-      const message = await client.messages.create({
-        model: "claude-sonnet-4-5",
-        max_tokens: 16000,
-        messages: [{ role: "user", content: prompt }],
-      });
+      // Стрим, а не обычный запрос. Статью просят объёмом от 5000 слов —
+      // это минуты генерации, и всё это время обычный запрос держит
+      // соединение молча, без единого байта. Такое соединение рвут по дороге:
+      // в логах это выглядело как три попытки подряд с «Request timed out», и
+      // аналитика не выходила с 8 августа при исправно работающем cron.
+      // При стриме данные идут непрерывно, и рвать нечего.
+      const message = await client.messages
+        .stream({
+          model: "claude-sonnet-4-5",
+          max_tokens: 16000,
+          messages: [{ role: "user", content: prompt }],
+        })
+        .finalMessage();
 
       if (!message.content?.[0]?.text) {
         throw new Error(`Пустой ответ от API для "${specialty}"`);
