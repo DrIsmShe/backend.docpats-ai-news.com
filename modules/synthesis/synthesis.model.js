@@ -28,7 +28,7 @@ const synthesisSchema = new mongoose.Schema(
     language: { type: String, default: "ru" },
     wordCount: { type: Number },
     style: { type: String }, // analytical | clinical | popular | investigative | review
-    author: { type: String, default: "Доктор Исмаил" },
+    author: { type: String, default: "Doctor I.I." },
     sources: [sourceRefSchema],
     seo: {
       ru: { title: String, description: String },

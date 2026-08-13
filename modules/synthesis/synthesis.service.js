@@ -581,7 +581,7 @@ ${sourcesText}
 [1] Авторы. Название. Издание. Год. URL
 
 ## Об этом материале
-Материал подготовлен редакцией DocPats на основе рецензируемых научных источников: PubMed, The Lancet, PLOS Medicine, CDC, WHO и других ведущих медицинских изданий. Прошёл редакционную проверку DocPats под руководством главного редактора — Д-ра Исмаила Исмаилова, практикующего оториноларинголога.
+Материал подготовлен редакцией DocPats на основе рецензируемых научных источников: PubMed, The Lancet, PLOS Medicine, CDC, WHO и других ведущих медицинских изданий. Прошёл редакционную проверку DocPats под руководством главного редактора — Doctor I.I., практикующего оториноларинголога.
 
 *Материал носит информационный характер и не заменяет консультацию специалиста.*
 
@@ -596,19 +596,11 @@ ${sourcesText}
   for (let attempt = 0; attempt <= maxAttempts; attempt++) {
     const startTime = Date.now();
     try {
-      // Стрим, а не обычный запрос. Статью просят объёмом от 5000 слов —
-      // это минуты генерации, и всё это время обычный запрос держит
-      // соединение молча, без единого байта. Такое соединение рвут по дороге:
-      // в логах это выглядело как три попытки подряд с «Request timed out», и
-      // аналитика не выходила с 8 августа при исправно работающем cron.
-      // При стриме данные идут непрерывно, и рвать нечего.
-      const message = await client.messages
-        .stream({
-          model: "claude-sonnet-4-5",
-          max_tokens: 16000,
-          messages: [{ role: "user", content: prompt }],
-        })
-        .finalMessage();
+      const message = await client.messages.create({
+        model: "claude-sonnet-4-5",
+        max_tokens: 16000,
+        messages: [{ role: "user", content: prompt }],
+      });
 
       if (!message.content?.[0]?.text) {
         throw new Error(`Пустой ответ от API для "${specialty}"`);
@@ -644,7 +636,7 @@ ${sourcesText}
     language: "ru",
     wordCount: validationStats.wordCount,
     style: style.name,
-    author: "Доктор Исмаил",
+    author: "Doctor I.I.",
     sources: articles.map((a) => ({
       title: a.title,
       url: a.url || a.link || a.canonicalUrl,
