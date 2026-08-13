@@ -15,6 +15,7 @@ import { hybridClassify } from "../ai/hybridClassifier.js";
 import { assignArticleToCluster } from "../clustering/clustering.service.js";
 import { extractFullContent } from "../news/news.service.js";
 import { classifyForFeed } from "./editorialFilter.js";
+import { assessArticleText } from "../news/textQuality.js";
 import { makeHash } from "../../utils/hash.js";
 import { cosineSimilarity } from "../../utils/vector.js";
 import slugify from "slugify";
@@ -176,13 +177,22 @@ async function processArticle(source, rawArticle) {
   // Выключатель на случай, если решение окажется неверным: при
   // INGEST_REQUIRE_FULL_TEXT=off вернётся прежнее поведение.
   if (process.env.INGEST_REQUIRE_FULL_TEXT !== "off") {
-    const textLength = String(article.content || "").trim().length;
-    if (textLength < MIN_FULL_TEXT) {
+    // Одной длины мало, и это выяснилось на живом материале. Статья STAT на
+    // 1773 знака проходила порог, а состояла на три четверти из биографии
+    // автора и формы подписки: самого текста был один вводный абзац, дальше —
+    // «To read the rest of this story subscribe to STAT+». Подробности и
+    // разбор структуры — в modules/news/textQuality.js.
+    const verdict = assessArticleText(article.content, MIN_FULL_TEXT);
+    if (!verdict.ok) {
       console.log(
-        `  ⏭ Skipped (no_full_text, ${textLength} знаков): "${article.title.slice(0, 50)}"`,
+        `  ⏭ Skipped (${verdict.reason}, ${verdict.text.length} знаков): "${article.title.slice(0, 50)}"`,
       );
-      return { inserted: 0, skipped: 1, reason: "no_full_text" };
+      return { inserted: 0, skipped: 1, reason: verdict.reason };
     }
+    // Сохраняем очищенный текст: служебные блоки по краям не нужны ни врачу,
+    // ни модели — биография журналиста это ложный контекст и для поиска, и
+    // для классификации по специальности.
+    article.content = verdict.text;
   }
 
   // ── AI ANALYSIS ──

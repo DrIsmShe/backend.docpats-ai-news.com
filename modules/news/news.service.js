@@ -119,6 +119,37 @@ async function getBySlug(slug, locale = "en") {
 const USER_AGENT =
   "DocpatsBot/1.0 (+https://docpats.com; medical news aggregator)";
 
+// Предел длины текста.
+//
+// Было 15 000 знаков, и это резало саму суть ленты: три четверти материалов
+// (4346 из 5818) упирались в лимит, а научные статьи в PLOS, Frontiers и eLife
+// идут по 30–60 тысяч. Живой пример — работа Frontiers о поражении суставов
+// при псориатическом артрите: на странице 40 611 знаков, в базе лежало ровно
+// 15 000, оборванных посреди слова «destructive-d».
+//
+// 120 000 покрывает даже длинные обзоры с списком литературы. Предел вообще
+// нужен: он защищает от страницы-каталога, где «статьёй» окажется весь архив
+// журнала.
+const MAX_CONTENT = Number(process.env.NEWS_MAX_CONTENT || 120000);
+
+/**
+ * Обрезает текст по границе абзаца, а не посреди слова.
+ *
+ * Оборванное на полуслове предложение читается как ошибка сайта, а модель,
+ * которой такой текст попадёт на перевод или в анализ, честно попытается
+ * достроить смысл из обрубка.
+ */
+function limitText(text) {
+  const value = String(text || "");
+  if (value.length <= MAX_CONTENT) return value;
+
+  const cut = value.slice(0, MAX_CONTENT);
+  const lastBreak = cut.lastIndexOf("\n\n");
+  // Возвращаемся к последнему целому абзацу, но только если он не в самом
+  // начале: иначе от длинного текста без разбивки останется огрызок.
+  return lastBreak > MAX_CONTENT * 0.5 ? cut.slice(0, lastBreak) : cut;
+}
+
 export async function extractFullContent(url) {
   try {
     const res = await axios.get(url, {
@@ -152,7 +183,7 @@ export async function extractFullContent(url) {
     });
 
     return {
-      content: text.trim().slice(0, 15000),
+      content: limitText(text.trim()),
       image,
     };
   } catch (err) {
