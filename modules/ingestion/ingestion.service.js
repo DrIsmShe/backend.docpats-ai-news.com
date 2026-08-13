@@ -21,6 +21,12 @@ import slugify from "slugify";
 
 const MAX_EMBED_TEXT = 2000;
 
+// Ниже этой длины текст — не статья, а подпись под ссылкой. Тот же порог, по
+// которому лента считает hasFullText (modules/news/news.service.js): пороги
+// обязаны совпадать, иначе материал пройдёт загрузку и тут же будет помечен
+// «только аннотация».
+const MIN_FULL_TEXT = 500;
+
 export async function fetchArticlesFromSource(source) {
   if (source.type === "rss") return fetchRSS(source);
   if (source.type === "api" && source.slug === "pubmed")
@@ -149,6 +155,33 @@ async function processArticle(source, rawArticle) {
       if (parsed.content) article.content = parsed.content;
     } catch (err) {
       console.warn(`  ⚠️ extractFullContent failed: ${err.message}`);
+    }
+  }
+
+  // ── Нет полного текста — не берём вовсе ──
+  //
+  // Раньше такой материал сохранялся с одной аннотацией, и карточка обещала
+  // «читать полностью», а уводила на сайт издателя. Треть ленты состояла из
+  // таких: 970 материалов STAT News за платной стеной, 1698 CDC с уже
+  // протухшими ссылками. Врач кликал и упирался либо в подписку, либо в 404.
+  //
+  // Свежий поток от этого не страдает — замер на живой базе: за последние семь
+  // дней полный текст есть у 347 материалов из 347, за месяц — у 1521 из 1534.
+  // Отсекается почти исключительно то, что и раньше было нечитаемым.
+  //
+  // Проверка стоит ДО обращений к модели: разбор и векторизация материала,
+  // который мы всё равно не покажем, — это прямая трата денег. На той же
+  // выборке экономия около трети вызовов.
+  //
+  // Выключатель на случай, если решение окажется неверным: при
+  // INGEST_REQUIRE_FULL_TEXT=off вернётся прежнее поведение.
+  if (process.env.INGEST_REQUIRE_FULL_TEXT !== "off") {
+    const textLength = String(article.content || "").trim().length;
+    if (textLength < MIN_FULL_TEXT) {
+      console.log(
+        `  ⏭ Skipped (no_full_text, ${textLength} знаков): "${article.title.slice(0, 50)}"`,
+      );
+      return { inserted: 0, skipped: 1, reason: "no_full_text" };
     }
   }
 

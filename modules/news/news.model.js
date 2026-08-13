@@ -196,9 +196,12 @@ const newsSchema = new mongoose.Schema(
     //   correction  — поправка к другой работе на пару строк, не материал
     //   concern     — редакция выразила сомнение в достоверности
     //   editorial   — колонка редактора, не исследование
+    //   no_full_text — полного текста нет и достать его нельзя: платная стена
+    //                 (STAT+) или протухшая ссылка. Карточка обещала бы
+    //                 «читать полностью» и приводила к подписке или к 404.
     excludedReason: {
       type: String,
-      enum: ["", "retraction", "correction", "concern", "editorial"],
+      enum: ["", "retraction", "correction", "concern", "editorial", "no_full_text"],
       default: "",
     },
     translations: {
