@@ -11,6 +11,7 @@ import newsRoutes from "./modules/news/news.routes.js";
 import briefingRoutes from "./modules/briefing/briefing.routes.js";
 import ingestionRoutes from "./modules/ingestion/ingestion.routes.js";
 import synthesisRoutes from "./modules/synthesis/synthesis.routes.js";
+import searchRoutes from "./modules/search/search.routes.js";
 
 import { startScheduler } from "./modules/scheduler/scheduler.js";
 
@@ -62,6 +63,9 @@ app.use("/api/news", newsRoutes);
 app.use("/api/briefing", briefingRoutes);
 app.use("/api/ingestion", ingestionRoutes);
 app.use("/api/synthesis", synthesisRoutes);
+// Поиск по архиву. Роут существовал, но смонтирован не был — /api/search
+// отвечал 404, а поле поиска на странице было закомментировано.
+app.use("/api/search", searchRoutes);
 
 app.use((req, res) =>
   res.status(404).json({ success: false, message: "Route not found" }),
