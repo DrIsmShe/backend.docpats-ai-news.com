@@ -15,6 +15,31 @@ function applyTranslation(article, locale) {
   };
 }
 
+// Ниже этой длины текст — не статья, а подпись под ссылкой: заголовок,
+// служебная строка или пара предложений аннотации. Открывать такую карточку
+// внутри сайта незачем, и обещать «читать полностью» — обман.
+const FULL_TEXT_MIN = 500;
+
+/**
+ * Готовит материал для СПИСКА.
+ *
+ * Раньше список отдавал документ целиком, и ответ на 20 карточек весил 882 КБ:
+ * туда уезжал полный текст (до 15 000 знаков), вектор embedding из 1536 чисел
+ * и переводы на все пять языков — при том что в карточке видно 150 знаков.
+ *
+ * Здесь же считается hasFullText: по нему интерфейс честно показывает, что
+ * откроется внутри сайта, а что уведёт к издателю. Треть материалов приходит
+ * без текста, и раньше это выяснялось только после клика.
+ */
+function forList(article) {
+  const { content, embedding, translations, ...rest } = article;
+
+  return {
+    ...rest,
+    hasFullText: String(content || "").trim().length >= FULL_TEXT_MIN,
+  };
+}
+
 async function getLatestNews({
   limit = 20,
   page = 1,
@@ -47,7 +72,9 @@ async function getLatestNews({
   const total = await News.countDocuments(query);
 
   return {
-    items: items.map((a) => applyTranslation(a, locale)),
+    // Порядок важен: сначала перевод (ему нужны translations), потом сборка
+    // карточки, которая эти translations из ответа и убирает.
+    items: items.map((a) => forList(applyTranslation(a, locale))),
     total,
     page,
     limit,
@@ -63,11 +90,14 @@ async function getFeed(limit = 20, locale = "en") {
     .sort({ publishedAt: -1, createdAt: -1 })
     .limit(limit)
     .select(
-      "title summary aiSummaryShort aiSummaryLong specialty specialties sourceName slug publishedAt importanceScore type canonicalUrl url translations",
+      // content нужен, чтобы посчитать hasFullText, но в ответ он не уйдёт —
+      // forList его срезает. doi и pmid добавлены: по ним из карточки можно
+      // перейти к поиску доказательств, раньше эти поля не заполнялись вовсе.
+      "title summary aiSummaryShort aiSummaryLong specialty specialties sourceName slug publishedAt importanceScore type canonicalUrl url translations content doi pmid imageUrl journal",
     )
     .lean();
 
-  return items.map((a) => applyTranslation(a, locale));
+  return items.map((a) => forList(applyTranslation(a, locale)));
 }
 
 async function getBySlug(slug, locale = "en") {

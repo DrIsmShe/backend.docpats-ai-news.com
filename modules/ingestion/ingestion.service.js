@@ -14,6 +14,7 @@ import { fetchPubMed } from "./fetchers/pubmed.fetcher.js";
 import { hybridClassify } from "../ai/hybridClassifier.js";
 import { assignArticleToCluster } from "../clustering/clustering.service.js";
 import { extractFullContent } from "../news/news.service.js";
+import { classifyForFeed } from "./editorialFilter.js";
 import { makeHash } from "../../utils/hash.js";
 import { cosineSimilarity } from "../../utils/vector.js";
 import slugify from "slugify";
@@ -28,6 +29,22 @@ export async function fetchArticlesFromSource(source) {
   return [];
 }
 
+/**
+ * Дата публикации не может быть в будущем.
+ *
+ * Предохранитель на общем пути, независимо от источника. Точную логику дат
+ * знает фетчер (у PubMed это выбор между epubdate и pubdate), но полагаться
+ * только на неё нельзя: лента сортируется по publishedAt, и одна запись с
+ * датой «через полгода» встаёт вверху страницы и остаётся там навсегда.
+ * Пропускаем сутки запаса — на часовые пояса источников.
+ */
+function notInFuture(value) {
+  const parsed = value ? new Date(value) : null;
+  if (!parsed || Number.isNaN(parsed.valueOf())) return new Date();
+  const limit = new Date(Date.now() + 864e5);
+  return parsed > limit ? new Date() : parsed;
+}
+
 export function normalizeArticle(article = {}) {
   return {
     externalId: article.externalId || null,
@@ -35,10 +52,28 @@ export function normalizeArticle(article = {}) {
     summary: (article.summary || "").trim(),
     content: (article.content || "").trim(),
     canonicalUrl: (article.canonicalUrl || "").trim(),
-    publishedAt: article.publishedAt || new Date(),
+    publishedAt: notInFuture(article.publishedAt),
     authors: Array.isArray(article.authors) ? article.authors : [],
     journal: article.journal || null,
+    // Идентификаторы первоисточника. Без них ссылка на работу держится только
+    // на URL источника, а он меняется; DOI и PMID — постоянные.
+    doi: article.doi || extractDoiFromUrl(article.canonicalUrl) || null,
+    pmid: article.pmid || null,
   };
+}
+
+/**
+ * DOI из адреса статьи.
+ *
+ * У части источников DOI не приходит отдельным полем, но стоит прямо в ссылке:
+ * journals.plos.org/plosone/article?id=10.1371/journal.pone.0346364.
+ * Формат DOI: «10.» + регистрант + «/» + суффикс.
+ */
+function extractDoiFromUrl(url) {
+  const match = String(url || "").match(/\b(10\.\d{4,9}\/[^\s?&#"']+)/i);
+  if (!match) return null;
+  // Хвостовая пунктуация из адреса в DOI не входит.
+  return match[1].replace(/[.,;)]+$/, "");
 }
 
 export function buildSlug(title) {
@@ -86,6 +121,17 @@ async function processArticle(source, rawArticle) {
       `  ⏭ Skipped (no url/title): "${article.title?.slice(0, 50)}"`,
     );
     return { inserted: 0, skipped: 1, reason: "no_url_or_title" };
+  }
+
+  // ── Непригодное для ленты ──
+  //
+  // Раньше всего остального: отозванные работы, поправки и исследования не
+  // про людей не должны доходить ни до извлечения текста, ни до модели —
+  // это трата и денег, и времени на то, что показывать всё равно нельзя.
+  const editorial = classifyForFeed(article);
+  if (editorial.excluded) {
+    console.log(`  ⏭ Skipped (${editorial.reason}): "${article.title.slice(0, 50)}"`);
+    return { inserted: 0, skipped: 1, reason: editorial.reason };
   }
 
   // ── URL-дедупликация ──
@@ -194,7 +240,13 @@ async function processArticle(source, rawArticle) {
       authors: article.authors,
       journal: article.journal,
       embedding,
-      publishedAt: article.publishedAt || new Date(),
+      publishedAt: article.publishedAt,
+
+      // Идентификаторы первоисточника: normalizeArticle их уже вычислил
+      // (в том числе вытащив DOI из адреса статьи). Раньше эти два поля не
+      // заполнялись вовсе — ни у одного из 9079 материалов.
+      doi: article.doi,
+      pmid: article.pmid,
 
       isDuplicate: false,
       translationStatus: "pending",

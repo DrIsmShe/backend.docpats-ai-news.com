@@ -740,13 +740,55 @@ function classifyTypeBySource(
   return "news";
 }
 
+/**
+ * Встречается ли ключевое слово в тексте КАК СЛОВО.
+ *
+ * Раньше здесь был text.includes(kw), и это тихо ломало всю классификацию.
+ * Ключ "ent" находился внутри «patient», «treatment», «different»; "ear" —
+ * внутри «research», «year», «clear»; "nose" — внутри «diagnose». В итоге
+ * почти любая научная статья получала метку ЛОР: в ленте под ней лежали
+ * болезнь Лайма, Medicare и формальдегид в трейлерах. На материал набиралось
+ * в среднем 7,4 специальности, максимум 23 — фильтр по специальности не
+ * фильтровал ничего.
+ *
+ * Границы берём по НЕ-буквам, а не по : последний плохо работает с ключами
+ * «patient», а «ear» — внутри «research».
+ */
+/** Буква или цифра — то, что считается продолжением слова. */
+function isWordChar(ch) {
+  if (!ch) return false;
+  return (ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9");
+}
+
+function containsWord(text, keyword) {
+  const kw = String(keyword || "").toLowerCase().trim();
+  if (!kw) return false;
+
+  // Сравнение по индексам, а не регулярным выражением. Ключи содержат дефисы,
+  // скобки и точки («covid-19», «type 2 diabetes»), и при сборке регулярки их
+  // пришлось бы экранировать — лишний способ ошибиться там, где ошибка тихая.
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf(kw, from);
+    if (at === -1) return false;
+
+    const before = at === 0 ? "" : text[at - 1];
+    const after = text[at + kw.length] || "";
+    if (!isWordChar(before) && !isWordChar(after)) return true;
+
+    // Совпало внутри слова — ищем дальше: то же слово может встретиться
+    // отдельно ниже по тексту.
+    from = at + 1;
+  }
+}
+
 function classifySpecialties(title = "", summary = "", content = "") {
   const text = normalizeText(title, summary, content);
   const matched = new Set();
 
   for (const [specialty, keywords] of Object.entries(SPECIALTY_RULES)) {
     if (specialty === "general") continue;
-    if (keywords.some((kw) => text.includes(kw.toLowerCase()))) {
+    if (keywords.some((kw) => containsWord(text, kw))) {
       matched.add(specialty);
     }
   }
@@ -802,7 +844,7 @@ export function classifyByKeywords(text) {
     if (specialty === "general") continue;
     const keywords = SPECIALTY_RULES[specialty] || [];
     for (const kw of keywords) {
-      if (lower.includes(kw.toLowerCase())) return specialty;
+      if (containsWord(lower, kw)) return specialty;
     }
   }
   return null;
