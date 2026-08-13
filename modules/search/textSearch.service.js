@@ -130,10 +130,66 @@ export async function searchArchive({
 
   await ensureSearchIndex();
 
+  const words = clean.split(/\s+/).filter(Boolean);
+
+  // ПОЧЕМУ СНАЧАЛА ФРАЗА, А ПОТОМ СЛОВА.
+  //
+  // $text ищет по ИЛИ: любое слово из запроса. Человек, вставивший в поиск
+  // заголовок статьи, получает не эту статью, а всё, где встретилось
+  // «between», «patients» или «association». Живой пример: заголовок из
+  // семнадцати слов дал 5580 совпадений — почти весь архив, и нужной работы
+  // не было даже в первой пятёрке.
+  //
+  // Сортировка по релевантности не спасает: textScore считает ЧАСТОТУ слов,
+  // поэтому наверх выходит документ, где «association» повторено десять раз,
+  // а не тот, где совпал весь заголовок целиком.
+  //
+  // Поэтому длинный запрос сперва пробуем как точную фразу — в кавычках
+  // MongoDB ищет подряд идущие слова. Тот же заголовок так находит ровно одну
+  // работу, ту самую. Не нашлось — ищем обычным ИЛИ, как и раньше: короткие
+  // запросы вроде «метформин диабет» должны работать по словам.
+  const asPhrase = words.length >= 3 ? `"${clean.replace(/"/g, "")}"` : null;
+
+  if (asPhrase) {
+    const exact = await runSearch({
+      search: asPhrase,
+      specialty,
+      type,
+      page,
+      limit,
+      locale,
+      clean,
+    });
+    if (exact.total > 0) return { ...exact, matched: "phrase" };
+  }
+
+  return {
+    ...(await runSearch({
+      search: clean,
+      specialty,
+      type,
+      page,
+      limit,
+      locale,
+      clean,
+    })),
+    matched: "words",
+  };
+}
+
+async function runSearch({
+  search,
+  specialty,
+  type,
+  page,
+  limit,
+  locale,
+  clean,
+}) {
   const filter = {
     status: "published",
     isDuplicate: false,
-    $text: { $search: clean },
+    $text: { $search: search },
   };
 
   if (specialty && specialty !== "all") {
