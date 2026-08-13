@@ -106,13 +106,27 @@ async function getBySlug(slug, locale = "en") {
   return applyTranslation(article, locale);
 }
 
+// Представляемся честно, своим именем и адресом.
+//
+// Раньше здесь стоял поддельный Googlebot, и это не работало: CDC такие
+// запросы отклоняет с 403 — подделка под поисковик прямо запрещена их
+// правилами. В итоге 1709 материалов CDC из 1838 лежали в ленте вообще без
+// текста, и «читать полностью» уводило к издателю.
+//
+// Проверено на живых источниках: с этой подписью CDC отдаёт 200 и около 4700
+// знаков текста. Обычный браузерный User-Agent, кстати, тоже получает 403 —
+// пропускают именно представившегося бота.
+const USER_AGENT =
+  "DocpatsBot/1.0 (+https://docpats.com; medical news aggregator)";
+
 export async function extractFullContent(url) {
   try {
     const res = await axios.get(url, {
       timeout: 8000,
+      maxRedirects: 5,
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+        "User-Agent": USER_AGENT,
+        Accept: "text/html,application/xhtml+xml",
       },
     });
 
