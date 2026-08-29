@@ -4,6 +4,7 @@ import { runIngestion } from "../ingestion/ingestion.service.js";
 import { seedSourcesIfEmpty } from "../sources/source.service.js";
 import { runSynthesis } from "../synthesis/synthesis.service.js";
 import Synthesis from "../synthesis/synthesis.model.js";
+import { runConferenceIngestion } from "../conferences/conference.ingestion.js";
 import { withLock, LOCK_KEYS } from "../../utils/redisLock.js";
 
 // Тот же TTL, что у ручного запуска в app.js.
@@ -102,6 +103,23 @@ export async function startScheduler() {
       }
 
       await synthesisRun(`догон ${hour}:00`);
+    });
+  }
+
+  // 5. Конференции — раз в неделю, воскресенье 05:00 UTC. Чаще незачем:
+  // программы конгрессов не меняются по часам, а каждый прогон платный.
+  // Ничего не публикует — всё уходит в очередь модерации.
+  if (process.env.CONFERENCE_INGESTION !== "off") {
+    cron.schedule(process.env.CONFERENCE_INGESTION_CRON || "0 5 * * 0", async () => {
+      console.log("🎓 Conference ingestion starting...");
+      try {
+        const r = await runConferenceIngestion();
+        console.log(
+          `✅ Conferences: sources=${r.sources} found=${r.found} created=${r.created} updated=${r.updated} errors=${r.errors}`,
+        );
+      } catch (error) {
+        console.error("❌ Conference ingestion error:", error.message);
+      }
     });
   }
 

@@ -12,6 +12,7 @@ import briefingRoutes from "./modules/briefing/briefing.routes.js";
 import ingestionRoutes from "./modules/ingestion/ingestion.routes.js";
 import synthesisRoutes from "./modules/synthesis/synthesis.routes.js";
 import searchRoutes from "./modules/search/search.routes.js";
+import conferenceRoutes from "./modules/conferences/conference.routes.js";
 
 import { startScheduler } from "./modules/scheduler/scheduler.js";
 import { requireInternalToken } from "./middlewares/internalAuth.js";
@@ -91,6 +92,9 @@ app.use("/api/synthesis", synthesisRoutes);
 // Поиск по архиву. Роут существовал, но смонтирован не был — /api/search
 // отвечал 404, а поле поиска на странице было закомментировано.
 app.use("/api/search", searchRoutes);
+// Конференции. Витрина отдаёт только опубликованное; всё, что решает, ЧТО
+// увидят врачи, лежит под /admin и закрыто внутренним токеном.
+app.use("/api/conferences", conferenceRoutes);
 
 app.use((req, res) =>
   res.status(404).json({ success: false, message: "Route not found" }),

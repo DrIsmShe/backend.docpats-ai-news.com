@@ -118,6 +118,10 @@ export async function withLock(key, ttlMs, fn) {
 // использовали одну и ту же строку.
 export const LOCK_KEYS = {
   synthesis: "lock:synthesis:run",
+  // Обход сайтов обществ: платит за каждую страницу и пишет в ту же
+  // коллекцию, что и ручное добавление. Два одновременных обхода — двойной
+  // счёт и гонка на дедупе.
+  conferenceIngestion: "lock:conferences:ingest",
 };
 
 export default withLock;
