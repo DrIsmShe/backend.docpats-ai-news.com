@@ -155,7 +155,10 @@ router.post("/admin/:id/enrich", requireInternalToken, async (req, res) => {
 // Перевод опубликованных карточек на языки интерфейса.
 router.post("/admin/translate", requireInternalToken, async (req, res) => {
   try {
-    const result = await translatePending({ limit: req.body?.limit });
+    const result = await translatePending({
+      limit: req.body?.limit,
+      force: req.body?.force === true,
+    });
     res.json({ success: true, ...result });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

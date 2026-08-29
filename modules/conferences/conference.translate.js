@@ -70,10 +70,12 @@ export async function translateConference(doc, lang) {
     max_tokens: 8000,
     output_config: { effort: "low" },
     system:
-      "You translate a medical conference listing. Keep proper nouns, society " +
-      "names, abbreviations (ESC, CME, ECR) and numbers exactly as they are. " +
-      "Translate nothing that is empty: return an empty string or empty array. " +
-      "Do not add, explain or summarise anything.",
+      "You translate a medical conference listing. TRANSLATE EVERY FIELD, " +
+      "including each line of `program` — those are session and track " +
+      "descriptions, not names, and leaving them in English defeats the " +
+      "purpose. Keep unchanged only: the conference's own name, society " +
+      "names, abbreviations (ESC, CME, ECR) and numbers. An empty input " +
+      "field stays empty. Do not add, explain or summarise anything.",
     tools: [TOOL],
     tool_choice: { type: "tool", name: TOOL.name },
     messages: [
@@ -93,13 +95,13 @@ export async function translateConference(doc, lang) {
 }
 
 /** Перевести одну карточку на все языки интерфейса и сохранить. */
-export async function translateConferenceAll(doc) {
+export async function translateConferenceAll(doc, { force = false } = {}) {
   const result = { slug: doc.slug, done: [], error: null };
   try {
     const patch = {};
     for (const lang of UI_LANGUAGES) {
       if (lang === SOURCE_LANGUAGE) continue;
-      if (doc.translations?.[lang]?.title) continue; // уже переведено
+      if (!force && doc.translations?.[lang]?.title) continue; // уже переведено
       const t = await translateConference(doc, lang);
       if (!t) continue;
       patch[`translations.${lang}`] = {
@@ -127,15 +129,15 @@ export async function translateConferenceAll(doc) {
  * Опубликованные карточки без перевода. Переводим только опубликованное:
  * платить за перевод того, что модератор отклонит, незачем.
  */
-export async function translatePending({ limit = 10 } = {}) {
+export async function translatePending({ limit = 10, force = false } = {}) {
   const docs = await Conference.find({
     status: "published",
-    translationStatus: { $ne: "done" },
+    ...(force ? {} : { translationStatus: { $ne: "done" } }),
   })
     .limit(Math.min(Number(limit) || 10, 30))
     .lean();
 
   const results = [];
-  for (const doc of docs) results.push(await translateConferenceAll(doc));
+  for (const doc of docs) results.push(await translateConferenceAll(doc, { force }));
   return { processed: results.length, results };
 }
