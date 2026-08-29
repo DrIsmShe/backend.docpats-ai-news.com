@@ -67,6 +67,26 @@ export function makeSlug(title, startDate) {
 }
 
 /**
+ * Накладываем перевод на карточку.
+ *
+ * Переводим только то, что человек читает. Даты, город, стоимость и ссылка
+ * остаются как есть: «перевод» факта — это способ его испортить. Пустое поле
+ * перевода тоже игнорируем — лучше английский оригинал, чем пустая строка.
+ */
+export function applyTranslation(doc, lang) {
+  if (!doc || !lang || lang === "en") return doc;
+  const t = doc.translations?.[lang];
+  if (!t) return doc;
+
+  const out = { ...doc };
+  for (const field of ["title", "description", "audience", "conditions"]) {
+    if (t[field]) out[field] = t[field];
+  }
+  if (Array.isArray(t.program) && t.program.length) out.program = t.program;
+  return out;
+}
+
+/**
  * Витрина. Показывает только опубликованное и только то, что ещё не прошло.
  *
  * По умолчанию сортируем по ближайшему дедлайну, а не по дате начала:
@@ -81,6 +101,7 @@ export async function listConferences({
   sort = "deadline",
   page = 1,
   limit = 20,
+  lang = "",
 } = {}) {
   const cats = normalizeCategories(categories);
 
@@ -109,11 +130,20 @@ export async function listConferences({
     Conference.countDocuments(query),
   ]);
 
-  return { items, total, page: Math.max(Number(page) || 1, 1), limit: perPage };
+  return {
+    items: items.map((doc) => applyTranslation(doc, lang)),
+    total,
+    page: Math.max(Number(page) || 1, 1),
+    limit: perPage,
+  };
 }
 
-export async function getConferenceBySlug(slug) {
-  return Conference.findOne({ slug: String(slug || "").toLowerCase(), status: "published" }).lean();
+export async function getConferenceBySlug(slug, lang = "") {
+  const doc = await Conference.findOne({
+    slug: String(slug || "").toLowerCase(),
+    status: "published",
+  }).lean();
+  return applyTranslation(doc, lang);
 }
 
 /**

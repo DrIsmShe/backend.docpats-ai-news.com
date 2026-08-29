@@ -7,6 +7,7 @@ import {
   enrichPending,
 } from "./conference.ingestion.js";
 import Conference from "./conference.model.js";
+import { translatePending, translateConferenceAll } from "./conference.translate.js";
 import {
   CATEGORY_CODES,
   listConferences,
@@ -17,6 +18,16 @@ import {
 } from "./conference.service.js";
 
 const router = express.Router();
+
+// Язык карточек. Имена параметров те же, что на витринах клиник и в новостях:
+// `locale` каноничный, `lang` остаётся ради живых ссылок, заголовок — для
+// вызовов из бэкенда.
+function resolveLang(req) {
+  const raw =
+    req.query.locale || req.query.lang || req.get("x-language") || "";
+  const lang = String(raw).slice(0, 5).toLowerCase();
+  return ["ru", "en", "az", "tr", "ar"].includes(lang) ? lang : "";
+}
 
 // ── Публичная витрина ────────────────────────────────────────────────────
 // Отдаёт только status: "published". Черновики и отклонённое наружу не
@@ -51,6 +62,7 @@ router.get("/", async (req, res) => {
       sort: sort ? String(sort) : "deadline",
       page,
       limit,
+      lang: resolveLang(req),
     });
     res.json({ success: true, ...result });
   } catch (error) {
@@ -140,12 +152,31 @@ router.post("/admin/:id/enrich", requireInternalToken, async (req, res) => {
   }
 });
 
+// Перевод опубликованных карточек на языки интерфейса.
+router.post("/admin/translate", requireInternalToken, async (req, res) => {
+  try {
+    const result = await translatePending({ limit: req.body?.limit });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 router.patch("/admin/:id/moderate", requireInternalToken, async (req, res) => {
   try {
     const { status, rejectedReason } = req.body || {};
     const doc = await moderateConference(req.params.id, { status, rejectedReason });
     if (!doc) return res.status(404).json({ success: false, message: "Not found" });
     res.json({ success: true, slug: doc.slug, status: doc.status });
+
+    // Перевод запускаем ПОСЛЕ ответа: он занимает несколько вызовов модели, а
+    // модератор не должен ждать их, нажав «Опубликовать». Ошибка перевода не
+    // отменяет публикацию — карточка уже в витрине, просто пока по-английски.
+    if (doc.status === "published" && doc.translationStatus !== "done") {
+      translateConferenceAll(doc.toObject ? doc.toObject() : doc).catch((e) =>
+        console.error("[conferences] перевод не удался:", e.message),
+      );
+    }
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
   }
@@ -154,7 +185,7 @@ router.patch("/admin/:id/moderate", requireInternalToken, async (req, res) => {
 // Ставим последним: одно-сегментный /:slug иначе перехватил бы /categories.
 router.get("/:slug", async (req, res) => {
   try {
-    const doc = await getConferenceBySlug(req.params.slug);
+    const doc = await getConferenceBySlug(req.params.slug, resolveLang(req));
     if (!doc) return res.status(404).json({ success: false, message: "Not found" });
     res.json({ success: true, conference: doc });
   } catch (error) {
