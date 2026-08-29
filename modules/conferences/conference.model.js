@@ -97,10 +97,18 @@ const conferenceSchema = new mongoose.Schema(
 
     translations: {
       type: Map,
+      // Поля перечислены полностью и намеренно: Mongoose молча отбрасывает
+      // всё, чего нет в подсхеме. Пока здесь стояли только title и
+      // description, перевод программы, аудитории и условий выполнялся,
+      // оплачивался — и терялся на записи, а витрина показывала английский
+      // оригинал рядом с переведённым описанием.
       of: new mongoose.Schema(
         {
           title: { type: String, default: "" },
           description: { type: String, default: "" },
+          audience: { type: String, default: "" },
+          conditions: { type: String, default: "" },
+          program: { type: [String], default: [] },
         },
         { _id: false },
       ),
