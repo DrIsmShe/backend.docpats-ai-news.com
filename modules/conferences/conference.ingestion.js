@@ -1,5 +1,5 @@
 import sources from "../../config/conferenceSources.js";
-import { stripHtml } from "../../utils/html.js";
+import * as cheerio from "cheerio";
 import {
   extractConferences,
   extractConferenceDetails,
@@ -27,6 +27,16 @@ const TRUSTED_DOMAINS = sources.map((s) => s.domain);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Текст страницы СО ССЫЛКАМИ.
+ *
+ * Обычный stripHtml выбрасывает адреса, и модель, которой велено вернуть
+ * ссылку на мероприятие, физически не может её увидеть — она подставляла
+ * адрес самой страницы общества. В итоге у карточек url совпадал с
+ * sourceUrl, а второй проход перечитывал ту же страницу-список и не находил
+ * ни программы, ни дедлайнов. Поэтому ссылки оставляем прямо в тексте:
+ * «Название конгресса (https://…)».
+ */
 async function fetchPageText(url) {
   const response = await fetch(url, {
     headers: { "user-agent": USER_AGENT, accept: "text/html" },
@@ -34,7 +44,25 @@ async function fetchPageText(url) {
     signal: AbortSignal.timeout(PAGE_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return stripHtml(await response.text());
+
+  const $ = cheerio.load(await response.text());
+  $("script, style, noscript").remove();
+  $("a[href]").each((_, el) => {
+    const $el = $(el);
+    const href = String($el.attr("href") || "").trim();
+    const text = $el.text().replace(/\s+/g, " ").trim();
+    // Якоря, mailto и пустые подписи ничего не дают, а место занимают.
+    if (!href || !text || href.startsWith("#") || href.startsWith("mailto:")) return;
+    let absolute = href;
+    try {
+      absolute = new URL(href, response.url || url).toString();
+    } catch {
+      return;
+    }
+    $el.replaceWith(`${text} (${absolute}) `);
+  });
+
+  return $.text().replace(/\s+/g, " ").trim();
 }
 
 /** "2026-09-01" → Date; мусор и null → null. */

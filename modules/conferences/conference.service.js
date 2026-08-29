@@ -224,6 +224,18 @@ export async function upsertDraft(payload, options = {}) {
       if (Number.isNaN(after) || before === after) continue;
       patch[field] = payload[field];
     }
+    // Уточнение адреса. У ранних карточек url совпадал с адресом
+    // страницы-списка: ссылки терялись при очистке HTML, и модель не могла
+    // указать собственную страницу мероприятия. Если теперь пришёл адрес
+    // конкретнее — заменяем и сбрасываем отметку добора, чтобы подробности
+    // перечитались уже с нужной страницы.
+    const wasListingUrl = existing.url && existing.url === existing.sourceUrl;
+    const gotOwnUrl = payload.url && payload.url !== payload.sourceUrl;
+    if (wasListingUrl && gotOwnUrl) {
+      patch.url = payload.url;
+      patch.detailsFetchedAt = null;
+    }
+
     if (Object.keys(patch).length) await Conference.updateOne({ _id: existing._id }, { $set: patch });
     return { created: false, updated: Object.keys(patch), doc: existing };
   }

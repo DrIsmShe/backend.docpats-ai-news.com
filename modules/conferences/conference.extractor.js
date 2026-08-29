@@ -96,7 +96,10 @@ RULES — follow them literally:
 3. Skip events that have already ended.
 4. Dates: strict "YYYY-MM-DD". A month without a day is the 1st of that month.
    If the year is not written on the page, the date is null.
-5. "url" must be a link that appears on the page. If none, use the page URL.
+5. "url": the link to THIS event's own page. Links appear in the text as
+   "link text (https://…)" — copy the address of the event's own page, not
+   the address of this listing page. Only if the event has no own link at
+   all, use the page URL.
 6. "categories": [] when the event is not tied to a specialty (health law, AI
    in medicine, clinic management) — such events matter to every doctor.
 7. "country": ISO 3166-1 alpha-2, uppercase. Null if no city is stated.
