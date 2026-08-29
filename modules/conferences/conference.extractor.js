@@ -156,3 +156,104 @@ export async function extractConferences({ sourceName, pageUrl, text }) {
 }
 
 export default extractConferences;
+
+// ── Второй проход: страница самой конференции ────────────────────────────
+//
+// Страница «Events» общества — это анонс в две строки. Всё, ради чего врач
+// открывает карточку (программа, кому адресовано, сколько стоит, до какого
+// числа регистрация), лежит на сайте мероприятия. Отдельный вызов на
+// отдельной странице, поэтому и промпт свой: здесь не надо находить события,
+// надо разобрать одно.
+
+const DETAILS_ITEM = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    description: nullable("string"),
+    program: { type: "array", items: { type: "string" } },
+    audience: nullable("string"),
+    conditions: nullable("string"),
+    venue: nullable("string"),
+    registrationDeadline: nullable("string"),
+    abstractDeadline: nullable("string"),
+    cmeCredits: nullable("string"),
+    price: nullable("string"),
+    city: nullable("string"),
+    country: nullable("string"),
+  },
+  required: [
+    "description",
+    "program",
+    "audience",
+    "conditions",
+    "venue",
+    "registrationDeadline",
+    "abstractDeadline",
+    "cmeCredits",
+    "price",
+    "city",
+    "country",
+  ],
+};
+
+const DETAILS_TOOL = {
+  name: "record_conference_details",
+  description: "Record the details of this one conference from its own page.",
+  strict: true,
+  input_schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: { details: DETAILS_ITEM },
+    required: ["details"],
+  },
+};
+
+/**
+ * @returns {Promise<object|null>} null — ключа нет, текста нет или модель
+ *   не вызвала инструмент. Пустые поля означают «на странице не сказано».
+ */
+export async function extractConferenceDetails({ title, pageUrl, text }) {
+  const client = getClient();
+  if (!client) return null;
+  if (!text || text.length < 200) return null;
+
+  const prompt = `Read the official page of ONE medical conference and record its details.
+
+Conference: ${title}
+Page URL: ${pageUrl}
+
+RULES — follow them literally:
+1. Describe only what this page says. Never invent a fact.
+2. Anything the page does not state is null (or [] for program).
+3. "program": the topics, tracks or key sessions as short lines — at most 12.
+   Not the schedule by hour, not speaker biographies.
+4. "audience": who the event is addressed to, in one sentence.
+5. "conditions": what a participant must do or pay to take part —
+   registration steps, membership requirements, refund or visa terms.
+   One short paragraph, plain text.
+6. "venue": the building or campus, not the city.
+7. Dates strict "YYYY-MM-DD". No year on the page → null.
+8. "price": quote the page ("from EUR 450", "free for members"), do not compute.
+9. Write description, audience and conditions in ENGLISH regardless of the
+   page language — переводом на языки интерфейса занимается отдельный слой.
+
+PAGE TEXT:
+${text.slice(0, MAX_TEXT)}`;
+
+  const response = await client.messages.create({
+    model: MODEL,
+    max_tokens: 16000,
+    output_config: { effort: "medium" },
+    system:
+      "You are a careful data extractor for a medical education catalogue. " +
+      "You never invent facts. Missing data is null.",
+    tools: [DETAILS_TOOL],
+    tool_choice: { type: "tool", name: DETAILS_TOOL.name },
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  const call = response.content.find(
+    (block) => block.type === "tool_use" && block.name === DETAILS_TOOL.name,
+  );
+  return call?.input?.details || null;
+}

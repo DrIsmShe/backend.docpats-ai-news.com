@@ -122,9 +122,16 @@ export async function getConferenceBySlug(slug) {
  * отклонённые (решение могло быть ошибочным — карточки не удаляются).
  */
 export async function listDrafts({ limit = 50, status = "draft" } = {}) {
+  const now = new Date();
   const filter = ["draft", "published", "rejected"].includes(status)
     ? { status }
     : {};
+  // Прошедшее в очередь не показываем: опубликовать его нельзя, а внимание
+  // модератора оно отнимает наравне с настоящей работой.
+  filter.$or = [
+    { endDate: { $gte: now } },
+    { endDate: null, startDate: { $gte: now } },
+  ];
   return Conference.find(filter)
     .sort({ createdAt: -1 })
     .limit(Math.min(Number(limit) || 50, 200))

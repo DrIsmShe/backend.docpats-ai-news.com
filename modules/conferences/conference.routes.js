@@ -1,7 +1,11 @@
 import express from "express";
 import requireInternalToken from "../../middlewares/internalAuth.js";
 import { withLock, LOCK_KEYS } from "../../utils/redisLock.js";
-import { runConferenceIngestion } from "./conference.ingestion.js";
+import {
+  runConferenceIngestion,
+  enrichConference,
+  enrichPending,
+} from "./conference.ingestion.js";
 import Conference from "./conference.model.js";
 import {
   CATEGORY_CODES,
@@ -69,9 +73,18 @@ router.get("/admin/drafts", requireInternalToken, async (req, res) => {
 
 router.post("/admin/ingest", requireInternalToken, async (req, res) => {
   try {
-    const { title, url } = req.body || {};
+    const { title, url, startDate, endDate } = req.body || {};
     if (!title || !url) {
       return res.status(400).json({ success: false, message: "title and url are required" });
+    }
+    // Прошедшее не заводим и вручную: карточка создалась бы, но в очереди не
+    // показалась — и человек решил бы, что форма не сработала.
+    const ends = endDate || startDate;
+    if (ends && new Date(ends) < new Date()) {
+      return res.status(400).json({
+        success: false,
+        message: "Конференция уже прошла — такие карточки не заводим",
+      });
     }
     const result = await upsertDraft(req.body);
     res.status(result.created ? 201 : 200).json({
@@ -99,6 +112,28 @@ router.post("/admin/ingest-run", requireInternalToken, async (req, res) => {
     if (!acquired) {
       return res.status(409).json({ success: false, message: "Обход уже идёт" });
     }
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Добор подробностей со страницы самой конференции. Отдельно от обхода:
+// страницу мероприятия можно перечитать, не обходя заново все источники.
+router.post("/admin/enrich", requireInternalToken, async (req, res) => {
+  try {
+    const result = await enrichPending({ limit: req.body?.limit });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.post("/admin/:id/enrich", requireInternalToken, async (req, res) => {
+  try {
+    const doc = await Conference.findById(req.params.id).lean();
+    if (!doc) return res.status(404).json({ success: false, message: "Not found" });
+    const result = await enrichConference(doc);
     res.json({ success: true, ...result });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

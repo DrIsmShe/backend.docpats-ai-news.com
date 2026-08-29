@@ -1,6 +1,11 @@
 import sources from "../../config/conferenceSources.js";
 import { stripHtml } from "../../utils/html.js";
-import { extractConferences, isExtractorConfigured } from "./conference.extractor.js";
+import {
+  extractConferences,
+  extractConferenceDetails,
+  isExtractorConfigured,
+} from "./conference.extractor.js";
+import Conference from "./conference.model.js";
 import { upsertDraft, normalizeCategories } from "./conference.service.js";
 
 // Обход источников: страница общества → текст → модель → черновики.
@@ -81,7 +86,7 @@ export function toPayload(item, source) {
 
 /** Один источник. Не бросает: падение одного сайта не должно ронять обход. */
 export async function ingestSource(source) {
-  const stat = { slug: source.slug, found: 0, created: 0, updated: 0, skipped: 0, error: null };
+  const stat = { slug: source.slug, found: 0, created: 0, updated: 0, skipped: 0, past: 0, error: null };
   try {
     const text = await fetchPageText(source.eventsUrl);
     const items = await extractConferences({
@@ -99,9 +104,22 @@ export async function ingestSource(source) {
         stat.skipped += 1;
         continue;
       }
+      // Прошедшее не заводим вовсе. Опубликовать его нельзя, а в очереди
+      // модерации оно только отнимает внимание: страницы обществ годами
+      // держат анонсы прошлых конгрессов.
+      const ends = payload.endDate || payload.startDate;
+      if (ends < new Date()) {
+        stat.past += 1;
+        continue;
+      }
       const result = await upsertDraft(payload, { trustedDomains: TRUSTED_DOMAINS });
-      if (result.created) stat.created += 1;
-      else if (result.updated.length) stat.updated += 1;
+      if (result.created) {
+        stat.created += 1;
+        // Сразу вторым проходом добираем подробности со страницы самой
+        // конференции: на странице общества их нет, а карточка без программы
+        // и дедлайна — это то же, что ссылка в поиске.
+        await enrichConference(result.doc);
+      } else if (result.updated.length) stat.updated += 1;
       else stat.skipped += 1;
     }
   } catch (err) {
@@ -142,9 +160,77 @@ export async function runConferenceIngestion({ slug } = {}) {
     created: sum("created"),
     updated: sum("updated"),
     skipped: sum("skipped"),
+    past: sum("past"),
     errors: stats.filter((s) => s.error).length,
     stats,
   };
 }
 
 export default runConferenceIngestion;
+
+// ── Второй проход: добор подробностей со страницы конференции ────────────
+//
+// Заполняем только ПУСТЫЕ поля. Если модератор что-то поправил руками, его
+// правка старше машинной: перезаписывать её значило бы наказывать за то,
+// что человек сделал работу.
+
+const FILLABLE_TEXT = ["description", "audience", "conditions", "venue", "cmeCredits", "price", "city"];
+const FILLABLE_DATE = ["registrationDeadline", "abstractDeadline"];
+
+export async function enrichConference(doc) {
+  const result = { slug: doc.slug, filled: [], error: null };
+  try {
+    const text = await fetchPageText(doc.url);
+    const details = await extractConferenceDetails({
+      title: doc.title,
+      pageUrl: doc.url,
+      text,
+    });
+    if (!details) {
+      result.error = isExtractorConfigured() ? "модель не вернула данные" : "нет ключа модели";
+      return result;
+    }
+
+    const patch = {};
+    for (const field of FILLABLE_TEXT) {
+      const value = String(details[field] || "").trim();
+      if (value && !String(doc[field] || "").trim()) patch[field] = value;
+    }
+    for (const field of FILLABLE_DATE) {
+      const value = toDate(details[field]);
+      if (value && !doc[field]) patch[field] = value;
+    }
+    if (Array.isArray(details.program) && details.program.length && !(doc.program || []).length) {
+      patch.program = details.program.map((line) => String(line).trim()).filter(Boolean).slice(0, 12);
+    }
+    const country = String(details.country || "").trim().toUpperCase();
+    if (country.length === 2 && !doc.country) patch.country = country;
+
+    // Отметку ставим всегда, даже если добавить было нечего: иначе страница
+    // будет перечитываться на каждом прогоне и платить за один и тот же ответ.
+    patch.detailsFetchedAt = new Date();
+
+    await Conference.updateOne({ _id: doc._id }, { $set: patch });
+    result.filled = Object.keys(patch).filter((k) => k !== "detailsFetchedAt");
+  } catch (err) {
+    result.error = err.message;
+  }
+  return result;
+}
+
+/** Добор для карточек, которых он ещё не касался. */
+export async function enrichPending({ limit = 20 } = {}) {
+  const docs = await Conference.find({
+    detailsFetchedAt: null,
+    status: { $in: ["draft", "published"] },
+  })
+    .limit(Math.min(Number(limit) || 20, 50))
+    .lean();
+
+  const results = [];
+  for (const doc of docs) {
+    results.push(await enrichConference(doc));
+    await sleep(PAUSE_BETWEEN_SOURCES_MS);
+  }
+  return { processed: results.length, results };
+}
