@@ -1,6 +1,6 @@
 import sources from "../../config/conferenceSources.js";
 import { stripHtml } from "../../utils/html.js";
-import { extractConferences } from "./conference.extractor.js";
+import { extractConferences, isExtractorConfigured } from "./conference.extractor.js";
 import { upsertDraft, normalizeCategories } from "./conference.service.js";
 
 // Обход источников: страница общества → текст → модель → черновики.
@@ -117,8 +117,11 @@ export async function ingestSource(source) {
  * @param {string} [options.slug] — прогнать один источник (для проверки)
  */
 export async function runConferenceIngestion({ slug } = {}) {
+  const aiConfigured = isExtractorConfigured();
   const active = sources.filter((s) => s.isActive && (!slug || s.slug === slug));
-  if (!active.length) return { sources: 0, created: 0, updated: 0, stats: [] };
+  if (!active.length) {
+    return { sources: 0, created: 0, updated: 0, stats: [], aiConfigured };
+  }
 
   const stats = [];
   for (const source of active) {
@@ -130,6 +133,10 @@ export async function runConferenceIngestion({ slug } = {}) {
 
   const sum = (field) => stats.reduce((acc, s) => acc + s[field], 0);
   return {
+    // Без ключа модель не вызывалась вовсе, и «найдено 0» означает не
+    // «на сайтах пусто», а «извлекать было нечем». Разницу обязан видеть
+    // тот, кто смотрит на пустую очередь модерации.
+    aiConfigured,
     sources: stats.length,
     found: sum("found"),
     created: sum("created"),
