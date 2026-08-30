@@ -37,7 +37,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * ни программы, ни дедлайнов. Поэтому ссылки оставляем прямо в тексте:
  * «Название конгресса (https://…)».
  */
-async function fetchPageText(url) {
+async function fetchPage(url) {
   const response = await fetch(url, {
     headers: { "user-agent": USER_AGENT, accept: "text/html" },
     redirect: "follow",
@@ -47,6 +47,7 @@ async function fetchPageText(url) {
 
   const $ = cheerio.load(await response.text());
   $("script, style, noscript").remove();
+  const links = [];
   $("a[href]").each((_, el) => {
     const $el = $(el);
     const href = String($el.attr("href") || "").trim();
@@ -59,10 +60,11 @@ async function fetchPageText(url) {
     } catch {
       return;
     }
+    links.push({ label: text, href: absolute });
     $el.replaceWith(`${text} (${absolute}) `);
   });
 
-  return $.text().replace(/\s+/g, " ").trim();
+  return { text: $.text().replace(/\s+/g, " ").trim(), links, finalUrl: response.url || url };
 }
 
 /** "2026-09-01" → Date; мусор и null → null. */
@@ -116,7 +118,7 @@ export function toPayload(item, source) {
 export async function ingestSource(source) {
   const stat = { slug: source.slug, found: 0, created: 0, updated: 0, skipped: 0, past: 0, error: null };
   try {
-    const text = await fetchPageText(source.eventsUrl);
+    const { text } = await fetchPage(source.eventsUrl);
     const items = await extractConferences({
       sourceName: source.name,
       pageUrl: source.eventsUrl,
@@ -205,10 +207,38 @@ export default runConferenceIngestion;
 const FILLABLE_TEXT = ["description", "audience", "conditions", "venue", "cmeCredits", "price", "city"];
 const FILLABLE_DATE = ["registrationDeadline", "abstractDeadline"];
 
-export async function enrichConference(doc) {
-  const result = { slug: doc.slug, filled: [], error: null };
+// Подписи ссылок, за которыми обычно лежат сроки и деньги. Главную страницу
+// конгресса организаторы держат витриной, а «Registration» и «Abstracts» —
+// это уже страницы с датами, до которых надо успеть.
+const REGISTRATION_LINK =
+  /regist|abstract|fees?|pricing|tarif|submission|deadline|тезис|регистрац|kayıt|qeydiyyat/i;
+
+/** Ссылка на страницу сроков — только на том же домене, чтобы не разбрестись. */
+function findRegistrationLink(links, pageUrl) {
+  let host;
   try {
-    const text = await fetchPageText(doc.url);
+    host = new URL(pageUrl).hostname.replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+  for (const { label, href } of links) {
+    if (!REGISTRATION_LINK.test(label)) continue;
+    try {
+      const u = new URL(href);
+      if (u.hostname.replace(/^www\./, "") !== host) continue;
+      if (u.toString() === pageUrl) continue;
+      return u.toString();
+    } catch {
+      /* битая ссылка — пропускаем */
+    }
+  }
+  return null;
+}
+
+export async function enrichConference(doc) {
+  const result = { slug: doc.slug, filled: [], error: null, secondPage: null };
+  try {
+    const { text, links } = await fetchPage(doc.url);
     const details = await extractConferenceDetails({
       title: doc.title,
       pageUrl: doc.url,
@@ -217,6 +247,42 @@ export async function enrichConference(doc) {
     if (!details) {
       result.error = isExtractorConfigured() ? "модель не вернула данные" : "нет ключа модели";
       return result;
+    }
+
+    // Второй заход — на страницу регистрации, и только если после первой
+    // так и нет сроков или условий. Это ещё один вызов модели на карточку,
+    // и платить за него, когда всё уже нашлось, незачем.
+    const stillMissingDates =
+      !details.registrationDeadline && !doc.registrationDeadline &&
+      !details.abstractDeadline && !doc.abstractDeadline;
+    const stillMissingTerms = !details.conditions && !doc.conditions;
+
+    if (stillMissingDates || stillMissingTerms) {
+      const regUrl = findRegistrationLink(links, doc.url);
+      if (regUrl) {
+        try {
+          const second = await fetchPage(regUrl);
+          const more = await extractConferenceDetails({
+            title: doc.title,
+            pageUrl: regUrl,
+            text: second.text,
+          });
+          if (more) {
+            // Первая страница главнее: она о самом мероприятии. Со второй
+            // берём только то, чего на первой не было.
+            for (const key of Object.keys(more)) {
+              const isEmpty = Array.isArray(details[key])
+                ? !details[key].length
+                : !details[key];
+              if (isEmpty && more[key]) details[key] = more[key];
+            }
+            result.secondPage = regUrl;
+          }
+        } catch (e) {
+          // Страница сроков не открылась — не повод терять уже собранное.
+          console.warn(`[conferences] ${doc.slug}: страница сроков ${regUrl}: ${e.message}`);
+        }
+      }
     }
 
     const patch = {};
