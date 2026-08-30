@@ -16,13 +16,23 @@ const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 100;
 
 // Таймаут 15 минут — длинные AR/TR переводы могут занимать 8-12 минут.
+//
+// Но одного таймаута мало, и это выяснилось на практике: с апреля az, tr и
+// ar переставали переводиться с «Request timed out», а en проходил всегда.
+// Дело не в клиенте — длинная генерация БЕЗ ПОТОКОВОЙ ПЕРЕДАЧИ упирается в
+// ограничение на стороне API независимо от того, сколько готов ждать
+// клиент. Английский перевод русской статьи в это ограничение
+// укладывается, а арабский, турецкий и азербайджанский — нет: тот же
+// текст занимает в токенах заметно больше.
 const anthropic = new Anthropic({ timeout: 900_000, maxRetries: 0 });
 
 // ─── Перевод одной статьи через Claude (один вызов) ──────────
 async function translateSynthesisArticle(title, body, locale) {
   const targetLanguage = LOCALE_NAMES[locale];
 
-  const message = await anthropic.messages.create({
+  // Потоковая передача обязательна: при таком max_tokens обычный запрос
+  // рвётся по времени, и именно поэтому переводы молча пропадали.
+  const stream = anthropic.messages.stream({
     model: "claude-sonnet-4-5",
     max_tokens: 16000,
     messages: [
@@ -44,6 +54,7 @@ ${body}`,
     ],
   });
 
+  const message = await stream.finalMessage();
   const translated = message.content[0]?.text?.trim() || "";
   const firstLine = translated.split("\n").find((l) => l.startsWith("# "));
   const translatedTitle = firstLine ? firstLine.slice(2).trim() : title;
@@ -128,14 +139,26 @@ export async function translateAllLocales(article) {
   const locales = Object.keys(LOCALE_NAMES);
 
   console.log(
-    `[Synthesis:prefetch] Начинаем перевод "${article.title.slice(0, 50)}..." на ${locales.join(", ")} (параллельно)`,
+    `[Synthesis:prefetch] Начинаем перевод "${article.title.slice(0, 50)}..." на ${locales.join(", ")} (последовательно)`,
   );
 
   const startTime = Date.now();
 
-  const results = await Promise.allSettled(
-    locales.map((locale) => translateOne(article, locale)),
-  );
+  // ПОСЛЕДОВАТЕЛЬНО, а не все четыре разом.
+  //
+  // Параллельный запуск четырёх длинных генераций съедал общий лимит
+  // выходных токенов в минуту: языки замедляли друг друга, и те, что
+  // длиннее, не успевали. Ночной задаче спешить некуда — восемь минут
+  // подряд лучше, чем четыре одновременно и три из них впустую.
+  const results = [];
+  for (const locale of locales) {
+    try {
+      await translateOne(article, locale);
+      results.push({ status: "fulfilled" });
+    } catch (err) {
+      results.push({ status: "rejected", reason: err });
+    }
+  }
 
   const elapsed = Math.round((Date.now() - startTime) / 1000);
   const succeeded = results.filter((r) => r.status === "fulfilled").length;
