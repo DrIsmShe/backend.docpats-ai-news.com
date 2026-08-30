@@ -45,6 +45,11 @@ async function fetchPage(url) {
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
+  // Не HTML разбирать нечем: cheerio превратит PDF в кашу, а модель её
+  // добросовестно опишет как условия участия.
+  const type = response.headers.get("content-type") || "";
+  if (type && !/html/i.test(type)) throw new Error(`не HTML (${type.split(";")[0]})`);
+
   const $ = cheerio.load(await response.text());
   $("script, style, noscript").remove();
   const links = [];
@@ -211,10 +216,19 @@ const FILLABLE_DATE = ["registrationDeadline", "abstractDeadline"];
 // конгресса организаторы держат витриной, а «Registration» и «Abstracts» —
 // это уже страницы с датами, до которых надо успеть.
 const REGISTRATION_LINK =
-  /regist|abstract|fees?|pricing|tarif|submission|deadline|тезис|регистрац|kayıt|qeydiyyat/i;
+  /\b(registration|register|abstracts?|fees?|pricing|deadlines?|submission)\b|тезис|регистрац|kayıt|qeydiyyat/i;
+
+// «Registries» и «registry» — это базы данных, а не регистрация. На сайте ACS
+// ссылка «Data and Registries» уводила добор в раздел реестров.
+const NOT_REGISTRATION = /registr(y|ies)|registered\s+nurse/i;
+
+// Второй заход умеет читать только HTML. PDF с условиями участия — частый
+// случай, но cheerio разберёт его в мусор, а модель добросовестно этот мусор
+// опишет.
+const NOT_HTML = /\.(pdf|docx?|xlsx?|pptx?|zip|rar|jpe?g|png|gif|mp4)(\?|#|$)/i;
 
 /** Ссылка на страницу сроков — только на том же домене, чтобы не разбрестись. */
-function findRegistrationLink(links, pageUrl) {
+export function findRegistrationLink(links, pageUrl) {
   let host;
   try {
     host = new URL(pageUrl).hostname.replace(/^www\./, "");
@@ -223,6 +237,8 @@ function findRegistrationLink(links, pageUrl) {
   }
   for (const { label, href } of links) {
     if (!REGISTRATION_LINK.test(label)) continue;
+    if (NOT_REGISTRATION.test(label) || NOT_REGISTRATION.test(href)) continue;
+    if (NOT_HTML.test(href)) continue;
     try {
       const u = new URL(href);
       if (u.hostname.replace(/^www\./, "") !== host) continue;
