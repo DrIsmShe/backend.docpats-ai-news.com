@@ -172,6 +172,11 @@ const DETAILS_ITEM = {
   type: "object",
   additionalProperties: false,
   properties: {
+    // Даты самого мероприятия. Их нет в схеме первого прохода не по забывчивости:
+    // на странице-списке общества года часто нет вовсе (так теряла находки FDI),
+    // а на собственной странице конгресса дата стоит в заголовке.
+    startDate: nullable("string"),
+    endDate: nullable("string"),
     description: nullable("string"),
     program: { type: "array", items: { type: "string" } },
     audience: nullable("string"),
@@ -185,6 +190,8 @@ const DETAILS_ITEM = {
     country: nullable("string"),
   },
   required: [
+    "startDate",
+    "endDate",
     "description",
     "program",
     "audience",
@@ -235,7 +242,9 @@ RULES — follow them literally:
    registration steps, membership requirements, refund or visa terms.
    One short paragraph, plain text.
 6. "venue": the building or campus, not the city.
-7. Dates strict "YYYY-MM-DD". No year on the page → null.
+7. Dates strict "YYYY-MM-DD". No year on the page → null. "startDate" and
+   "endDate" are the dates of the event itself — take them from the page even
+   if they appear only in the heading or the banner.
 8. "price": quote the page ("from EUR 450", "free for members"), do not compute.
 9. Write description, audience and conditions in ENGLISH regardless of the
    page language — переводом на языки интерфейса занимается отдельный слой.

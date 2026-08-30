@@ -216,7 +216,10 @@ export default runConferenceIngestion;
 // что человек сделал работу.
 
 const FILLABLE_TEXT = ["description", "audience", "conditions", "venue", "cmeCredits", "price", "city"];
-const FILLABLE_DATE = ["registrationDeadline", "abstractDeadline"];
+// Даты мероприятия тоже добираем: на странице-списке общества года может не
+// быть вовсе, а на собственной странице конгресса он стоит в заголовке. Так
+// карточка без даты чинит себя сама, не дожидаясь человека.
+const FILLABLE_DATE = ["startDate", "endDate", "registrationDeadline", "abstractDeadline"];
 
 // Подписи ссылок, за которыми обычно лежат сроки и деньги. Главную страницу
 // конгресса организаторы держат витриной, а «Registration» и «Abstracts» —
@@ -321,6 +324,12 @@ export async function enrichConference(doc) {
     }
     const country = String(details.country || "").trim().toUpperCase();
     if (country.length === 2 && !doc.country) patch.country = country;
+
+    // Дата нашлась на своей странице — снимаем предупреждение, иначе оно
+    // висело бы на карточке, где проблемы уже нет.
+    if (patch.startDate && (doc.validationFlags || []).includes("no_start_date")) {
+      patch.validationFlags = doc.validationFlags.filter((f) => f !== "no_start_date");
+    }
 
     // Отметку ставим всегда, даже если добавить было нечего: иначе страница
     // будет перечитываться на каждом прогоне и платить за один и тот же ответ.
