@@ -153,6 +153,18 @@ export async function getConferenceBySlug(slug, lang = "") {
  */
 export async function listDrafts({ limit = 50, status = "draft" } = {}) {
   const now = new Date();
+
+  // Отдельный список: карточки, у которых даты нет вовсе. Их не опубликовать
+  // (витрина отбирает по датам), и в общей очереди они теряются среди
+  // готовых. Показываем их отдельно, чтобы было видно, сколько работы
+  // осталось руками.
+  if (status === "no-date") {
+    return Conference.find({ startDate: null, status: { $ne: "rejected" } })
+      .sort({ createdAt: -1 })
+      .limit(Math.min(Number(limit) || 50, 200))
+      .lean();
+  }
+
   const filter = ["draft", "published", "rejected"].includes(status)
     ? { status }
     : {};
