@@ -157,10 +157,12 @@ export async function listDrafts({ limit = 50, status = "draft" } = {}) {
     ? { status }
     : {};
   // Прошедшее в очередь не показываем: опубликовать его нельзя, а внимание
-  // модератора оно отнимает наравне с настоящей работой.
+  // модератора оно отнимает наравне с настоящей работой. А вот карточки БЕЗ
+  // дат показываем обязательно — именно они и ждут, чтобы дату вписали.
   filter.$or = [
     { endDate: { $gte: now } },
     { endDate: null, startDate: { $gte: now } },
+    { startDate: null, endDate: null },
   ];
   return Conference.find(filter)
     .sort({ createdAt: -1 })
@@ -252,10 +254,59 @@ export async function upsertDraft(payload, options = {}) {
   return { created: true, updated: [], doc };
 }
 
+/**
+ * Проставить даты руками. Нужно там, где на странице общества года нет
+ * вовсе: модель обязана оставить поле пустым, а человек находит дату за
+ * минуту. Без этой возможности карточка застревала бы в очереди навсегда.
+ */
+export async function setConferenceDates(id, { startDate, endDate, registrationDeadline, abstractDeadline }) {
+  const patch = {};
+  const toDate = (v) => {
+    if (!v) return null;
+    const d = new Date(`${String(v).slice(0, 10)}T00:00:00Z`);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  for (const [key, value] of Object.entries({
+    startDate,
+    endDate,
+    registrationDeadline,
+    abstractDeadline,
+  })) {
+    if (value === undefined) continue;
+    patch[key] = toDate(value);
+  }
+  if (!Object.keys(patch).length) throw new Error("Не передано ни одной даты");
+
+  // Флаг «нет даты начала» снимаем, когда её вписали: иначе предупреждение
+  // висело бы на карточке, где проблемы уже нет.
+  const doc = await Conference.findById(id);
+  if (!doc) return null;
+  const startAfter = patch.startDate !== undefined ? patch.startDate : doc.startDate;
+  if (startAfter) {
+    patch.validationFlags = (doc.validationFlags || []).filter(
+      (f) => f !== "no_start_date",
+    );
+  }
+
+  return Conference.findByIdAndUpdate(id, { $set: patch }, { new: true });
+}
+
 /** Решение человека: опубликовать или отклонить. */
 export async function moderateConference(id, { status, rejectedReason = "" }) {
   if (!["published", "rejected", "draft"].includes(status)) {
     throw new Error("moderateConference: status must be published, rejected or draft");
+  }
+
+  // Без даты начала публиковать нечего: витрина отбирает по датам, и такая
+  // карточка просто не появилась бы в списке — модератор решил бы, что
+  // кнопка не сработала. Отказываем внятно.
+  if (status === "published") {
+    const doc = await Conference.findById(id).select("startDate").lean();
+    if (doc && !doc.startDate) {
+      throw new Error(
+        "Нельзя опубликовать без даты начала — заполните её в карточке",
+      );
+    }
   }
   return Conference.findByIdAndUpdate(
     id,

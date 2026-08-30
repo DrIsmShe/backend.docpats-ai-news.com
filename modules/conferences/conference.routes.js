@@ -15,6 +15,7 @@ import {
   listDrafts,
   upsertDraft,
   moderateConference,
+  setConferenceDates,
 } from "./conference.service.js";
 
 const router = express.Router();
@@ -211,6 +212,18 @@ router.post("/admin/translate", requireInternalToken, async (req, res) => {
     res.json({ success: true, ...result });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Ручное проставление дат — для карточек, у которых на странице общества
+// года нет вовсе.
+router.patch("/admin/:id/dates", requireInternalToken, async (req, res) => {
+  try {
+    const doc = await setConferenceDates(req.params.id, req.body || {});
+    if (!doc) return res.status(404).json({ success: false, message: "Not found" });
+    res.json({ success: true, slug: doc.slug, startDate: doc.startDate });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
   }
 });
 

@@ -155,7 +155,7 @@ export default [
   { name: "EULAR (ревматология)", slug: "eular", eventsUrl: "https://www.eular.org/", domain: "eular.org", country: "", trust: "high", categories: ["therapeutic"], isActive: true },
   { name: "ESCMID (инфекции и микробиология)", slug: "escmid", eventsUrl: "https://www.escmid.org/", domain: "escmid.org", country: "", trust: "high", categories: ["therapeutic"], isActive: true },
   { name: "UEG (гастроэнтерология)", slug: "ueg", eventsUrl: "https://ueg.eu/", domain: "ueg.eu", country: "", trust: "high", categories: ["therapeutic"], isActive: true },
-  { name: "ESCRS (офтальмохирургия)", slug: "escrs", eventsUrl: "https://www.escrs.org/", domain: "escrs.org", country: "", trust: "high", categories: ["ophthalmology-ent"], isActive: true },
+  { name: "ESCRS (офтальмохирургия)", slug: "escrs", eventsUrl: "https://www.escrs.org/meetings-and-events/event-search", domain: "escrs.org", country: "", trust: "high", categories: ["ophthalmology-ent"], isActive: true },
   { name: "ESE (эндокринология)", slug: "ese", eventsUrl: "https://www.ese-hormones.org/", domain: "ese-hormones.org", country: "", trust: "high", categories: ["therapeutic"], isActive: true },
   { name: "EPA (психиатрия)", slug: "epa", eventsUrl: "https://www.europsy.net/", domain: "europsy.net", country: "", trust: "high", categories: ["mental-health"], isActive: true },
   { name: "EACTS (кардиоторакальная хирургия)", slug: "eacts", eventsUrl: "https://www.eacts.org/", domain: "eacts.org", country: "", trust: "high", categories: ["surgical"], isActive: true },
@@ -214,4 +214,16 @@ export default [
   { name: "American Academy of Ophthalmology", slug: "aao", eventsUrl: "https://www.aao.org/annual-meeting", domain: "aao.org", country: "US", trust: "high", categories: ["ophthalmology-ent"], isActive: true },
   { name: "American Academy of Pediatrics", slug: "aap-us", eventsUrl: "https://www.aap.org/", domain: "aap.org", country: "US", trust: "high", categories: ["pediatrics"], isActive: true },
   { name: "ACOG (акушерство и гинекология)", slug: "acog", eventsUrl: "https://www.acog.org/", domain: "acog.org", country: "US", trust: "high", categories: ["womens-health"], isActive: true },
+
+  // ── ЗАКРЫВАЕМ ПУСТЫЕ НАПРАВЛЕНИЯ ───────────────────────────
+  // В админке эти направления показывались как «нет ни одной конференции».
+  // Мир тут ни при чём: у нас просто не было источников — по спортивной
+  // медицине и фармации ни одного, а стоматологию и офтальмологию
+  // представляли корневые страницы обществ без списка мероприятий.
+  { name: "American College of Sports Medicine", slug: "acsm", eventsUrl: "https://acsm.org/meetings/", domain: "acsm.org", country: "US", trust: "high", categories: ["sports-medicine"], isActive: true },
+  { name: "ESSKA (спортивная травматология)", slug: "esska", eventsUrl: "https://www.esska.org/events/event_list.asp", domain: "esska.org", country: "", trust: "high", categories: ["sports-medicine", "surgical"], isActive: true },
+  { name: "EAHP (госпитальная фармация)", slug: "eahp", eventsUrl: "https://eahp.eu/events-1/", domain: "eahp.eu", country: "", trust: "high", categories: ["pharmacy"], isActive: true },
+  { name: "FIP (международная фармацевтическая федерация)", slug: "fip", eventsUrl: "https://www.fip.org/congresses", domain: "fip.org", country: "", trust: "high", categories: ["pharmacy"], isActive: true },
+  { name: "FDI World Dental Congress", slug: "fdi-congress", eventsUrl: "https://world-dental-congress.org/", domain: "world-dental-congress.org", country: "", trust: "high", categories: ["dentistry"], isActive: true },
+  { name: "IFOS (оториноларингология)", slug: "ifos", eventsUrl: "https://ifosworld.org/", domain: "ifosworld.org", country: "", trust: "high", categories: ["ophthalmology-ent"], isActive: true },
 ];

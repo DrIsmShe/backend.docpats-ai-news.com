@@ -133,19 +133,25 @@ export async function ingestSource(source) {
 
     for (const item of items) {
       const payload = toPayload(item, source);
-      // Без названия или без даты начала карточка бесполезна и модератору:
-      // по ней нельзя ни отличить дубль, ни поставить в очередь по сроку.
-      if (!payload.title || !payload.startDate) {
+      // Без названия карточки нет вовсе.
+      if (!payload.title) {
         stat.skipped += 1;
         continue;
       }
-      // Прошедшее не заводим вовсе. Опубликовать его нельзя, а в очереди
-      // модерации оно только отнимает внимание: страницы обществ годами
-      // держат анонсы прошлых конгрессов.
-      const ends = payload.endDate || payload.startDate;
-      if (ends < new Date()) {
-        stat.past += 1;
-        continue;
+      // А вот без даты — заводим. Раньше такие отбрасывались, и на сайте FDI
+      // все четыре найденных конгресса пропали молча: год на странице не
+      // написан. Модератор дату найдёт за минуту, модель — нет. Карточка
+      // попадает в очередь с флагом no_start_date, а опубликовать её, пока
+      // даты нет, служба модерации не даст.
+      //
+      // Прошедшее по-прежнему не заводим: опубликовать его нельзя, а
+      // страницы обществ годами держат анонсы прошлых конгрессов.
+      if (payload.startDate) {
+        const ends = payload.endDate || payload.startDate;
+        if (ends < new Date()) {
+          stat.past += 1;
+          continue;
+        }
       }
       const result = await upsertDraft(payload, { trustedDomains: TRUSTED_DOMAINS });
       if (result.created) {
