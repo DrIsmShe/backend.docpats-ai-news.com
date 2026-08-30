@@ -38,6 +38,55 @@ router.get("/categories", (req, res) => {
   res.json({ success: true, categories: CATEGORY_CODES });
 });
 
+// Сколько чего есть. Отдаём отдельным роутом, а не считаем на клиенте по
+// выдаче: витрина листается страницами, и «найдено 20» вместо «58» вводит
+// в заблуждение сильнее, чем отсутствие счётчика.
+//
+// Считаем только опубликованное и непрошедшее — ровно то, что человек может
+// увидеть в списке.
+router.get("/stats", async (req, res) => {
+  try {
+    const now = new Date();
+    const visible = {
+      status: "published",
+      $or: [
+        { endDate: { $gte: now } },
+        { endDate: null, startDate: { $gte: now } },
+      ],
+    };
+
+    const [total, byCategory, byCountry, upcomingDeadlines] = await Promise.all([
+      Conference.countDocuments(visible),
+      Conference.aggregate([
+        { $match: visible },
+        { $unwind: "$categories" },
+        { $group: { _id: "$categories", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]),
+      Conference.aggregate([
+        { $match: { ...visible, country: { $ne: "" } } },
+        { $group: { _id: "$country", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]),
+      Conference.countDocuments({
+        ...visible,
+        $and: [
+          {
+            $or: [
+              { registrationDeadline: { $gte: now } },
+              { abstractDeadline: { $gte: now } },
+            ],
+          },
+        ],
+      }),
+    ]);
+
+    res.json({ success: true, total, byCategory, byCountry, upcomingDeadlines });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // Что вообще есть в базе по странам — для выпадающего списка на странице.
 router.get("/countries", async (req, res) => {
   try {
