@@ -34,7 +34,11 @@ async function translateSynthesisArticle(title, body, locale) {
   // рвётся по времени, и именно поэтому переводы молча пропадали.
   const stream = anthropic.messages.stream({
     model: "claude-sonnet-4-5",
-    max_tokens: 16000,
+    // Тот же потолок, что и у генерации, и по той же причине: перевод
+    // длиннее оригинала. Русская статья на 43 тысячи знаков сама по себе
+    // почти упирается в 16 000 токенов, а её арабский и турецкий перевод
+    // и подавно — текст обрывался бы на полуслове.
+    max_tokens: 32000,
     messages: [
       {
         role: "user",
@@ -55,6 +59,13 @@ ${body}`,
   });
 
   const message = await stream.finalMessage();
+
+  // Обрыв по лимиту вывода — брак: перевод оборван на полуслове. Пусть
+  // сработает повтор, а не сохранится половина статьи.
+  if (message.stop_reason === "max_tokens") {
+    throw new Error(`Перевод на ${locale} оборван по лимиту вывода`);
+  }
+
   const translated = message.content[0]?.text?.trim() || "";
   const firstLine = translated.split("\n").find((l) => l.startsWith("# "));
   const translatedTitle = firstLine ? firstLine.slice(2).trim() : title;
@@ -71,6 +82,13 @@ function validateTranslation(translated, locale) {
 
   if (/(.)\1{30,}/.test(translated.body)) {
     throw new Error(`Detected character loop in ${locale} output`);
+  }
+
+  const tail = translated.body.trimEnd();
+  if (!/[.!?:»)"'\]]$/.test(tail)) {
+    throw new Error(
+      `Перевод на ${locale} обрывается на полуслове: ...${tail.slice(-50)}`,
+    );
   }
 
   const headerCount = (translated.body.match(/^##\s+/gm) || []).length;
