@@ -21,7 +21,10 @@ import Anthropic from "@anthropic-ai/sdk";
 
 dotenv.config();
 
-const LIMIT = Number(process.argv[2] || 3);
+// Сколько статей за прогон. Ищем первый ЧИСЛОВОЙ аргумент, а не второй по
+// счёту: иначе флаг на его месте превратил бы предел в NaN и цикл не сделал
+// бы ни одного шага.
+const LIMIT = Number(process.argv.slice(2).find((a) => /^\d+$/.test(a)) || 3);
 const client = new Anthropic({ timeout: 900_000, maxRetries: 0 });
 
 // Сколько текста показать модели как контекст. Вся статья не нужна: важно
@@ -70,7 +73,21 @@ ${tail}
     throw new Error("продолжение само оборвалось по лимиту");
   }
 
-  const text = message.content[0]?.text || "";
+  // Отказ модели выглядит снаружи как пустой или обрезанный ответ, и
+  // раньше именно так и записывался в лог. Из-за этого три статьи
+  // прогонялись раз за разом с диагнозом «пустое продолжение», хотя
+  // повтор был заведомо бесполезен: модель не соглашалась продолжать
+  // текст. Отказ надо называть отказом.
+  if (message.stop_reason === "refusal") {
+    throw new Error(
+      "модель отказалась продолжать эту статью (stop_reason: refusal) — " +
+        "повторять бессмысленно, нужен человек",
+    );
+  }
+
+  // Текст собираем со ВСЕХ блоков, а не только с первого: ответ не
+  // обязан быть одним блоком.
+  const text = message.content.map((c) => c.text || "").join("");
   if (!text.trim()) throw new Error("пустое продолжение");
   if (isTruncated(text)) {
     throw new Error("продолжение обрывается на полуслове");
@@ -85,13 +102,29 @@ async function main() {
   const all = await col
     .find({ status: "published" })
     .sort({ createdAt: -1 })
-    .project({ title: 1, body: 1, wordCount: 1, createdAt: 1, bodyBeforeFix: 1 })
+    .project({
+      title: 1,
+      body: 1,
+      wordCount: 1,
+      createdAt: 1,
+      bodyBeforeFix: 1,
+      finishRefused: 1,
+    })
     .toArray();
 
   // Уже дописанные пропускаем: bodyBeforeFix — признак, что здесь работали.
-  const pending = all.filter((a) => !a.bodyBeforeFix && isTruncated(a.body));
+  // Отказы — тоже: модель их продолжать не станет, а каждый заход платный.
+  // Снять пометку и попробовать снова: --retry-refused.
+  const retryRefused = process.argv.includes("--retry-refused");
+  const truncated = all.filter((a) => !a.bodyBeforeFix && isTruncated(a.body));
+  const refused = truncated.filter((a) => a.finishRefused);
+  const pending = retryRefused ? truncated : truncated.filter((a) => !a.finishRefused);
 
-  console.log(`Оборванных статей: ${pending.length}. Дописываем ${Math.min(LIMIT, pending.length)}.`);
+  console.log(`Оборванных статей: ${truncated.length}. Дописываем ${Math.min(LIMIT, pending.length)}.`);
+  if (refused.length && !retryRefused) {
+    console.log(`Пропущено отказов модели: ${refused.length} (--retry-refused, чтобы попробовать снова).`);
+    for (const a of refused) console.log(`  - ${a.title.slice(0, 70)}`);
+  }
 
   for (const article of pending.slice(0, LIMIT)) {
     console.log(`
@@ -137,6 +170,13 @@ ${"=".repeat(70)}`);
 Стало слов: ${words} (+${words - article.wordCount}), за ${elapsed}s`);
     } catch (err) {
       console.error(`  НЕ УДАЛОСЬ: ${err.message}`);
+      // Отказ помечаем, чтобы следующий прогон не платил за него снова.
+      if (/refusal/.test(err.message)) {
+        await col.updateOne(
+          { _id: article._id },
+          { $set: { finishRefused: { at: new Date(), reason: "refusal" } } },
+        );
+      }
     }
   }
 
