@@ -1,15 +1,22 @@
 // scripts/retranslateMissing.js
 //
-// Догон переводов, потерянных из-за таймаутов.
+// Догон переводов: отсутствующих и устаревших.
 //
-// С апреля по август переводы на az, tr и ar срывались: длинная генерация
-// шла без потоковой передачи и обрывалась на стороне API. Сама причина
-// устранена в synthesis.controller.js, но статьи, переведённые тогда лишь
-// частично, сами себя не догонят — ночная задача берёт только свежие.
+// Два разных случая, и оба сами не рассосутся, потому что ночная задача
+// берёт только свежие статьи:
 //
-// Скрипт идёт от новых к старым и переводит недостающие языки. По одной
-// статье за раз и по одному языку: это те же вызовы, что ночью, и
-// торопиться некуда — зато видно, где остановились, если прервать.
+//   1. ПЕРЕВОДА НЕТ. С апреля по август переводы на az, tr и ar срывались
+//      по таймауту — длинная генерация шла без потоковой передачи.
+//
+//   2. ПЕРЕВОД УСТАРЕЛ. Статью дописали после обрыва, и перевод остался
+//      сделанным с обрезанного текста: на русском статья дочитывается до
+//      конца, а на арабском обрывается там же, где обрывалась раньше.
+//
+// Второй случай опаснее первого: отсутствие перевода видно сразу, а
+// устаревший выглядит целым.
+//
+// Признак устаревания — перевод сделан РАНЬШЕ, чем статью дописали.
+// Отдельного флага не нужно: finishedAt ставит скрипт дописывания.
 //
 // Запуск:  node scripts/retranslateMissing.js [сколько статей]
 
@@ -19,6 +26,22 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const LIMIT = Number(process.argv[2] || 10);
+const LOCALES = ["en", "az", "tr", "ar"];
+
+function needsWork(article) {
+  const tr = article.translations || {};
+  const finishedAt = article.finishedAt ? new Date(article.finishedAt) : null;
+
+  const missing = LOCALES.filter((l) => !tr[l]?.title);
+  const stale = finishedAt
+    ? LOCALES.filter((l) => {
+        const at = tr[l]?.translatedAt;
+        return at && new Date(at) < finishedAt;
+      })
+    : [];
+
+  return { missing, stale, need: missing.length + stale.length > 0 };
+}
 
 async function main() {
   await mongoose.connect(process.env.MONGO_URI || process.env.MONGO_URL);
@@ -30,38 +53,40 @@ async function main() {
     "../modules/synthesis/synthesis.controller.js"
   );
 
-  const LOCALES = ["en", "az", "tr", "ar"];
-
-  const articles = await Synthesis.find({ status: "published" })
+  const col = mongoose.connection.db.collection("syntheses");
+  const all = await col
+    .find({ status: "published" })
     .sort({ createdAt: -1 })
-    .limit(500);
+    .project({ title: 1, translations: 1, finishedAt: 1 })
+    .toArray();
 
-  const pending = articles.filter((a) => {
-    const have = Object.keys(a.translations || {});
-    return LOCALES.some((l) => !have.includes(l));
-  });
+  const pending = all
+    .map((a) => ({ a, ...needsWork(a) }))
+    .filter((x) => x.need);
 
+  const staleCount = pending.filter((x) => x.stale.length).length;
   console.log(
-    `Статей без полного набора переводов: ${pending.length}. Берём ${Math.min(LIMIT, pending.length)}.`,
+    `Требуют перевода: ${pending.length} (из них с устаревшим переводом: ${staleCount}). Берём ${Math.min(LIMIT, pending.length)}.`,
   );
 
   let done = 0;
-  for (const article of pending.slice(0, LIMIT)) {
-    const have = Object.keys(article.translations || {}).sort().join(",") || "нет";
-    console.log(
-      `
-[${done + 1}/${Math.min(LIMIT, pending.length)}] ${String(article.title).slice(0, 60)}`,
-    );
-    console.log(`  было: ${have}`);
+  for (const { a, missing, stale } of pending.slice(0, LIMIT)) {
+    console.log(`
+[${done + 1}] ${String(a.title).slice(0, 62)}`);
+    if (missing.length) console.log(`  нет перевода: ${missing.join(", ")}`);
+    if (stale.length) console.log(`  устарел: ${stale.join(", ")}`);
+
     try {
-      // translateAllLocales пропускает уже переведённые? Нет — переводит
-      // все. Это допустимо: повторный перевод перезаписывает своим же
-      // результатом, а выборочный вызов усложнил бы код ради экономии,
-      // которая на догоне в несколько десятков статей не важна.
+      // Модель Synthesis нужна целиком: translateAllLocales читает body.
+      const article = await Synthesis.findById(a._id);
+      const t0 = Date.now();
       await translateAllLocales(article);
-      const after = await Synthesis.findById(article._id).select("translations");
+      const after = await col.findOne(
+        { _id: a._id },
+        { projection: { translations: 1 } },
+      );
       console.log(
-        `  стало: ${Object.keys(after.translations || {}).sort().join(",")}`,
+        `  стало: ${Object.keys(after.translations || {}).sort().join(",")} за ${Math.round((Date.now() - t0) / 1000)}s`,
       );
     } catch (err) {
       console.error(`  не удалось: ${err.message}`);
