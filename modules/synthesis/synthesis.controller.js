@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import Synthesis from "./synthesis.model.js";
+import { isEnabled } from "../settings/jobSwitches.service.js";
 
 const LOCALE_NAMES = {
   en: "English",
@@ -154,6 +155,18 @@ async function translateOne(article, locale, retries = 2) {
 }
 
 export async function translateAllLocales(article) {
+  // Перевод — самая дорогая часть конвейера: четыре длинных генерации на
+  // каждую статью. Выключатель нужен именно здесь, чтобы можно было
+  // оставить выпуск статей, остановив только перевод.
+  //
+  // Проверяем ОДИН раз на статью, а не на каждый язык: переключение
+  // посреди статьи оставило бы её переведённой наполовину, и добор потом
+  // считал бы её готовой.
+  if (!(await isEnabled("translation"))) {
+    console.log("[Synthesis:prefetch] ⏸  Перевод выключен в панели — пропускаем");
+    return { translated: 0, skipped: true };
+  }
+
   const locales = Object.keys(LOCALE_NAMES);
 
   console.log(

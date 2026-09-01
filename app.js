@@ -17,6 +17,7 @@ import conferenceRoutes from "./modules/conferences/conference.routes.js";
 import { startScheduler } from "./modules/scheduler/scheduler.js";
 import { requireInternalToken } from "./middlewares/internalAuth.js";
 import { withLock, LOCK_KEYS } from "./utils/redisLock.js";
+import jobSwitchRoutes from "./modules/settings/jobSwitches.routes.js";
 
 // Синтез может идти долго: до трёх попыток генерации с паузами между ними.
 const SYNTHESIS_LOCK_TTL_MS = 30 * 60 * 1000;
@@ -95,6 +96,11 @@ app.use("/api/search", searchRoutes);
 // Конференции. Витрина отдаёт только опубликованное; всё, что решает, ЧТО
 // увидят врачи, лежит под /admin и закрыто внутренним токеном.
 app.use("/api/conferences", conferenceRoutes);
+
+// Управление фоновыми задачами: включить и выключить сбор новостей,
+// генерацию статей, перевод. Закрыто внутренним токеном — ходит только
+// админка DocPats, в браузер токен не попадает.
+app.use("/api/job-switches", jobSwitchRoutes);
 
 app.use((req, res) =>
   res.status(404).json({ success: false, message: "Route not found" }),

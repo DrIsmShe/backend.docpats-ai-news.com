@@ -6,6 +6,7 @@ import { runSynthesis } from "../synthesis/synthesis.service.js";
 import Synthesis from "../synthesis/synthesis.model.js";
 import { runConferenceIngestion } from "../conferences/conference.ingestion.js";
 import { withLock, LOCK_KEYS } from "../../utils/redisLock.js";
+import { isEnabled } from "../settings/jobSwitches.service.js";
 
 // Тот же TTL, что у ручного запуска в app.js.
 const SYNTHESIS_LOCK_TTL_MS = 30 * 60 * 1000;
@@ -42,6 +43,12 @@ export async function startScheduler() {
 
   // 3. Ingestion — 2 раза в день: 03:00 (перед синтезом) и 15:00 (резерв)
   cron.schedule("0 3,15 * * *", async () => {
+    // Переключатель спрашивается ПЕРЕД работой, а не при старте сервера:
+    // выключить надо уметь на ходу, не перезапуская процесс.
+    if (!(await isEnabled("ingestion"))) {
+      console.log("⏸  Сбор новостей выключен в панели — пропускаем");
+      return;
+    }
     console.log("⏰ Scheduled ingestion starting...");
     try {
       const result = await runIngestion();
@@ -62,6 +69,10 @@ export async function startScheduler() {
   // Условие смотрит в БАЗУ, а не в память процесса: перезапуск сервера не
   // должен приводить ко второй статье за день.
   const synthesisRun = async (label) => {
+    if (!(await isEnabled("synthesis"))) {
+      console.log(`⏸  Генерация статей выключена в панели — пропускаем (${label})`);
+      return;
+    }
     console.log(`🧠 Synthesis cron starting (${label})...`);
     try {
       // Блокировка общая с ручным запуском (POST /api/synthesis/run-now) и с
@@ -111,6 +122,10 @@ export async function startScheduler() {
   // Ничего не публикует — всё уходит в очередь модерации.
   if (process.env.CONFERENCE_INGESTION !== "off") {
     cron.schedule(process.env.CONFERENCE_INGESTION_CRON || "0 5 * * 0", async () => {
+      if (!(await isEnabled("conferences"))) {
+        console.log("⏸  Сбор конференций выключен в панели — пропускаем");
+        return;
+      }
       console.log("🎓 Conference ingestion starting...");
       try {
         const r = await runConferenceIngestion();
