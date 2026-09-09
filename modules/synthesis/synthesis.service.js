@@ -460,7 +460,11 @@ function validateGeneratedArticle(body, specialty) {
   // только по лимиту вывода. Обрезанная статья выглядит целой по всем
   // формальным признакам — длина, разделы, заголовок на месте, — и
   // отличается ровно одним: последняя фраза висит без точки.
-  const tail = body.trimEnd();
+  // Разметку с конца снимаем: статья заканчивается дисклеймером в
+  // курсиве, и последним символом стоит звёздочка, а не точка. Проверка
+  // на этом ломалась и браковала совершенно целые статьи — три попытки
+  // подряд, каждая оплаченная.
+  const tail = body.trimEnd().replace(/[*_`~\s]+$/, "");
   if (!/[.!?:»)"'\]]$/.test(tail)) {
     throw new Error(
       `Article for "${specialty}" ends mid-sentence: ...${tail.slice(-60)}`,
@@ -695,12 +699,21 @@ ${sourcesText}
   return saved;
 }
 
+// Что синтезу нужно от новости. Всё остальное — переводы, исходный HTML,
+// служебные поля — только раздувает выборку.
+const ПОЛЯ_ДЛЯ_СИНТЕЗА =
+  "title summary content url source specialties tags publishedAt createdAt importanceScore";
+
 async function fetchNewsForSynthesis(hoursBack) {
   const since = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
 
+  // Поля перечислены поимённо: полный документ новости тащит за собой
+  // исходный HTML и переводы на пять языков, а синтезу нужен смысл.
   let items = await NewsItem.find({ createdAt: { $gte: since } })
+    .select(ПОЛЯ_ДЛЯ_СИНТЕЗА)
     .sort({ createdAt: -1 })
     .limit(100)
+    .allowDiskUse(true)
     .lean();
 
   if (items.length >= 10) {
@@ -714,9 +727,14 @@ async function fetchNewsForSynthesis(hoursBack) {
     `[Synthesis] Свежих мало (${items.length}), добираем из всей базы...`,
   );
 
+  // Разрешение на диск — страховка, а не решение: сортировку держит
+  // индекс по createdAt. Но индекс может не доехать на новую базу, а
+  // молча вставшая генерация дороже нескольких лишних секунд.
   const allItems = await NewsItem.find({})
+    .select(ПОЛЯ_ДЛЯ_СИНТЕЗА)
     .sort({ createdAt: -1 })
     .limit(500)
+    .allowDiskUse(true)
     .lean();
 
   const shuffled = allItems.sort(() => Math.random() - 0.5).slice(0, 200);

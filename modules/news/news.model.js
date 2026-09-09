@@ -236,6 +236,11 @@ const newsSchema = new mongoose.Schema(
 newsSchema.index({ clusterId: 1 });
 newsSchema.index({ importanceScore: -1 });
 newsSchema.index({ publishedAt: -1 });
+// Синтез отбирает новости по createdAt, а не по publishedAt: у половины
+// источников даты публикации нет либо она врёт. Без этого индекса Mongo
+// сортирует 10 000 документов с полными текстами в памяти и упирается в
+// лимит 32 МБ — именно так генерация статей встала 8 сентября.
+newsSchema.index({ createdAt: -1 });
 newsSchema.index({ specialties: 1 });
 newsSchema.index({ tags: 1 });
 
