@@ -241,12 +241,25 @@ export async function getList(req, res) {
       Synthesis.countDocuments(filter),
     ]);
 
+    /* Запасной заголовок — из SEO, а не русский оригинал.
+     *
+     * Полный перевод статьи и SEO-обвязка делаются РАЗНЫМИ шагами: seo на
+     * пять языков появляется сразу при выпуске, перевод тела — отдельной
+     * длинной задачей следом. Пока она не прошла, список показывал
+     * русский заголовок — на арабской версии сайта он стоял русской
+     * строкой среди арабских карточек.
+     *
+     * seo[locale].title — настоящий перевод заголовка, просто сделанный
+     * другим шагом. Ставим его между переводом и оригиналом: карточка
+     * читается на своём языке с первого дня, а полный перевод догоняет
+     * (см. synthesis.retranslate.js).
+     */
     const mapped = needsTranslation
       ? articles.map((a) => {
           const cached = a.translations?.[locale];
           return {
             ...a,
-            title: cached?.title || a.title,
+            title: cached?.title || a.seo?.[locale]?.title || a.title,
             translations: undefined,
           };
         })

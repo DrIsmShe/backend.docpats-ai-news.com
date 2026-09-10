@@ -3,6 +3,7 @@ import cron from "node-cron";
 import { runIngestion } from "../ingestion/ingestion.service.js";
 import { seedSourcesIfEmpty } from "../sources/source.service.js";
 import { runSynthesis } from "../synthesis/synthesis.service.js";
+import { догнатьПереводы } from "../synthesis/synthesis.retranslate.js";
 import Synthesis from "../synthesis/synthesis.model.js";
 import { runConferenceIngestion } from "../conferences/conference.ingestion.js";
 import { withLock, LOCK_KEYS } from "../../utils/redisLock.js";
@@ -116,6 +117,31 @@ export async function startScheduler() {
       await synthesisRun(`догон ${hour}:00`);
     });
   }
+
+  /* 4b. Догон переводов — 06:00 UTC, через два часа после выпуска статьи.
+   *
+   * Перевод запускается один раз, сразу после генерации, вызовом
+   * «выстрелил и забыл»: ни очереди, ни повтора, ни следа в базе. Любая
+   * обычная причина — перезапуск процесса посреди перевода, таймаут
+   * модели, выключенный на ночь тумблер — оставляла статью
+   * непереведённой навсегда, потому что ночная задача берёт только
+   * свежие, а к вчерашней никто не возвращается.
+   *
+   * Так и вышло: всё по 31 августа переведено, а вышедшее 9 и 10 сентября
+   * — нет; ровно те статьи, что появились после перезапусков движка. На
+   * арабской версии сайта они стояли русскими заголовками среди арабских.
+   *
+   * Два часа после выпуска — чтобы догон не столкнулся с переводом,
+   * который штатно идёт следом за генерацией, и не сделал ту же работу
+   * дважды за деньги.
+   */
+  cron.schedule(process.env.SYNTHESIS_RETRANSLATE_CRON || "0 6 * * *", async () => {
+    try {
+      await догнатьПереводы();
+    } catch (error) {
+      console.error("❌ Догон переводов упал:", error.message);
+    }
+  });
 
   // 5. Конференции — раз в неделю, воскресенье 05:00 UTC. Чаще незачем:
   // программы конгрессов не меняются по часам, а каждый прогон платный.
