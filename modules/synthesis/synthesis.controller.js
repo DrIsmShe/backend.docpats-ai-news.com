@@ -269,15 +269,59 @@ export async function getList(req, res) {
   }
 }
 
-// ─── GET /api/synthesis/:id — полная статья ──────────────────
+/* ─── GET /api/synthesis/:id[?locale=xx] — полная статья ──────
+ *
+ * ЧТО ИЗМЕНИЛОСЬ И ЗАЧЕМ. Раньше эндпоинт отдавал оригинал независимо от
+ * ?locale= — переводы просто вырезались из ответа. Перевод брал клиент
+ * отдельным POST /translate уже после отрисовки, и до этого момента на
+ * странице стоял русский текст. Поисковому роботу и превью в мессенджере
+ * доставался именно он: адрес /articles/<id>/en объявлен английской
+ * версией, а по нему лежит русская статья.
+ *
+ * ЗДЕСЬ ТОЛЬКО ГОТОВОЕ. Перевода нет в кэше — отдаём оригинал и молчим,
+ * НИЧЕГО НЕ ЗАКАЗЫВАЕМ. Заказывает по-прежнему POST /translate, и это
+ * важно: GET дёргают роботы, а каждый заказ перевода стоит денег.
+ *
+ * translatedLocales — список языков, у которых перевод действительно
+ * готов. Он нужен тому, кто формирует hreflang: объявлять языковую
+ * версию, которой нет, хуже, чем не объявлять ничего.
+ */
 export async function getOne(req, res) {
   try {
-    const article = await Synthesis.findById(req.params.id)
-      .select("-translations")
-      .lean();
+    const запрошен = SUPPORTED_LOCALES.includes(req.query.locale)
+      ? req.query.locale
+      : null;
+
+    const article = await Synthesis.findById(req.params.id).lean();
     if (!article)
       return res.status(404).json({ success: false, message: "Not found" });
-    res.json({ success: true, article });
+
+    // .lean() отдаёт Map как обычный объект.
+    const переводы = article.translations || {};
+    const translatedLocales = Object.keys(переводы).filter(
+      (k) => переводы[k]?.title && переводы[k]?.body,
+    );
+    delete article.translations;
+
+    /* servedLocale, а не подмена language: language — язык ОРИГИНАЛА, и
+       по нему строится канонический адрес (оригинал живёт на голом
+       адресе, переводы — на языковых). Затерев его, мы бы отдали
+       канонический адрес перевода самому себе. */
+    const готовый = запрошен ? переводы[запрошен] : null;
+    const отдан = готовый?.title && готовый?.body;
+    if (отдан) {
+      article.title = готовый.title;
+      article.body = готовый.body;
+    }
+
+    res.json({
+      success: true,
+      article: {
+        ...article,
+        translatedLocales,
+        servedLocale: отдан ? запрошен : article.language || "ru",
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
