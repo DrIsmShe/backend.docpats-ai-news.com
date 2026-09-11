@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import NewsItem from "../news/news.model.js";
 import Synthesis from "./synthesis.model.js";
+import { перемешать } from "../ingestion/evidenceScore.js";
 import { translateAllLocales } from "./synthesis.controller.js";
 import { generateAllSeo } from "./seo.service.js";
 
@@ -370,6 +371,31 @@ function groupBySpecialty(items, maxGroups, excludeSet = new Set()) {
   const entries = Object.entries(map);
   if (entries.length === 0) return null;
 
+  /* Шесть источников для статьи — самые значимые, а не первые попавшиеся.
+   *
+   * Здесь стояло `articles.sort(() => Math.random() - 0.5).slice(0, 6)`.
+   * Обзор собирался из произвольных материалов: на вопрос «по какому
+   * критерию отобраны источники» ответить было нечем. Для платформы,
+   * обещающей доказательную медицину, это подрывало её главное обещание.
+   *
+   * Вдобавок случайность была мнимой. Компаратор в sort обязан быть
+   * непротиворечивым — давать один ответ на одну пару; случайный таковым
+   * не является, и перестановка выходит смещённой, по-разному в разных
+   * движках. Код не делал ни того, что задумано, ни того, что написано.
+   *
+   * Берём вдвое больше лучших по importanceScore и перемешиваем уже их:
+   * иначе одни и те же материалы возглавляли бы ленту изо дня в день.
+   * Случайность осталась там, где уместна, — в выборе между равными.
+   */
+  function отобратьИсточники(список, сколько) {
+    const балл = (a) =>
+      typeof a?.importanceScore === "number" ? a.importanceScore : 0;
+    const лучшие = [...список]
+      .sort((a, b) => балл(b) - балл(a))
+      .slice(0, сколько * 2);
+    return перемешать(лучшие).slice(0, сколько);
+  }
+
   // sqrt смягчает разрыв, рандом даёт шанс маленьким группам
   const weighted = entries.map(([specialty, articles]) => ({
     specialty,
@@ -388,7 +414,7 @@ function groupBySpecialty(items, maxGroups, excludeSet = new Set()) {
 
   return weighted.slice(0, maxGroups).map(({ specialty, articles }) => ({
     specialty,
-    articles: articles.sort(() => Math.random() - 0.5).slice(0, 6),
+    articles: отобратьИсточники(articles, 6),
   }));
 }
 
@@ -737,7 +763,12 @@ async function fetchNewsForSynthesis(hoursBack) {
     .allowDiskUse(true)
     .lean();
 
-  const shuffled = allItems.sort(() => Math.random() - 0.5).slice(0, 200);
+  /* Тот же смещённый компаратор стоял и здесь. Это запасной путь — когда
+     за последние часы новостей не набралось, — и берём мы двести из
+     пятисот; случайность тут по существу нужна, но она должна быть
+     настоящей: перемешивание Фишера—Йетса вместо sort со случайным
+     компаратором, который даёт неравномерный результат. */
+  const shuffled = перемешать(allItems).slice(0, 200);
 
   console.log(
     `[Synthesis] Итого для синтеза: ${shuffled.length} новостей из базы`,

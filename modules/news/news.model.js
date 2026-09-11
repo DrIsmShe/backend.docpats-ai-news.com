@@ -149,6 +149,31 @@ const newsSchema = new mongoose.Schema(
       default: "",
     },
 
+    /* По каким признакам выставлены importanceScore и evidenceLevel.
+       Нужны, чтобы оценку можно было объяснить, а не принимать на веру:
+       «дизайн:high, журнал, doi, выборка:100k+» читается и проверяется,
+       голое число — нет. */
+    evidenceSignals: {
+      type: [String],
+      default: [],
+    },
+
+    /* Сработало ли обогащение моделью.
+       Раньше провал был неотличим от успеха: при ошибке возвращались
+       константы из catch, и запись выглядела обработанной. Отсюда взялись
+       сотни материалов с одинаковым importanceScore: 50, и никто не
+       замечал, что шаг не работает вовсе. */
+    enrichmentStatus: {
+      type: String,
+      enum: ["ok", "failed", "skipped", ""],
+      default: "",
+      index: true,
+    },
+    enrichmentError: {
+      type: String,
+      default: "",
+    },
+
     isDuplicate: {
       type: Boolean,
       default: false,

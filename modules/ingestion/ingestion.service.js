@@ -8,6 +8,7 @@
 import Source from "../sources/source.model.js";
 import News from "../news/news.model.js";
 import { analyzeArticle } from "../ai/ai.service.js";
+import { оценитьЗначимость } from "./evidenceScore.js";
 import { createEmbedding } from "../ai/embedding.service.js";
 import { fetchRSS } from "./fetchers/rss.fetcher.js";
 import { fetchPubMed } from "./fetchers/pubmed.fetcher.js";
@@ -195,20 +196,42 @@ async function processArticle(source, rawArticle) {
     article.content = verdict.text;
   }
 
-  // ── AI ANALYSIS ──
-  let ai = {
-    summary: article.summary,
-    specialty: "general",
-    importanceScore: 50,
-  };
+  /* ── ОБОГАЩЕНИЕ МОДЕЛЬЮ ──
+   *
+   * Провал здесь больше не выглядит как успех. Раньше при любой ошибке
+   * возвращались константы из catch — summary исходника, specialty
+   * "general", importanceScore 50, — и отличить «модель не ответила» от
+   * «модель сказала, что материал средний» было нельзя. Отсюда и взялись
+   * сто записей подряд с одинаковым баллом: никто не замечал, что шаг
+   * не работает.
+   */
+  let ai = null;
+  let обогащениеСорвалось = null;
   try {
     ai = await analyzeArticle({
       ...article,
       content: article.content || article.summary,
     });
   } catch (error) {
+    обогащениеСорвалось = error.message;
     console.warn(`  ⚠️ AI analyze error: ${error.message}`);
   }
+
+  /* ── ЗНАЧИМОСТЬ И ДОКАЗАТЕЛЬНОСТЬ — ПРАВИЛАМИ ──
+   *
+   * Считаются из признаков самой записи: дизайн исследования назван в
+   * заголовке, журнал известен, DOI и PMID лежат полями. Правила
+   * воспроизводимы, стоят ноль и не ломаются молча — в отличие от шага
+   * выше, который один раз уже сломался и никому об этом не сказал.
+   *
+   * Балл модели не игнорируем: если она ответила и оценила материал выше
+   * правил, берём большее. Правила осторожны по устройству и склонны
+   * недооценивать то, чего не назвали словами.
+   */
+  const оценка = оценитьЗначимость({
+    ...article,
+    aiSummaryShort: ai?.summary,
+  });
 
   // ── HYBRID CLASSIFICATION ──
   let classification = {
@@ -268,8 +291,18 @@ async function processArticle(source, rawArticle) {
       status: "published",
       slug,
 
-      aiSummaryShort: ai.summary || article.summary,
+      aiSummaryShort: ai?.summary || article.summary,
       aiSummaryLong: "",
+      /* Видно, сработало обогащение или нет. Без этого поля отличить
+         «модель не ответила» от «нечего было обогащать» невозможно. */
+      enrichmentStatus: обогащениеСорвалось
+        ? "failed"
+        : ai
+          ? "ok"
+          : "skipped",
+      enrichmentError: обогащениеСорвалось || "",
+      evidenceLevel: оценка.evidenceLevel,
+      evidenceSignals: оценка.signals,
 
       type: classification.type || "news",
       specialty: classification.specialty || "general",
@@ -277,8 +310,10 @@ async function processArticle(source, rawArticle) {
         ? classification.specialties
         : [classification.specialty || "general"],
       tags: Array.isArray(classification.tags) ? classification.tags : [],
-      importanceScore:
-        typeof ai.importanceScore === "number" ? ai.importanceScore : 50,
+      importanceScore: Math.max(
+        оценка.importanceScore,
+        typeof ai?.importanceScore === "number" ? ai.importanceScore : 0,
+      ),
 
       authors: article.authors,
       journal: article.journal,
