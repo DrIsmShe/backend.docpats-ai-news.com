@@ -16,13 +16,14 @@
 
 import JobSwitch from "./jobSwitches.model.js";
 
-export const JOBS = ["ingestion", "synthesis", "translation", "conferences"];
+export const JOBS = ["ingestion", "synthesis", "translation", "conferences", "digest"];
 
 export const JOB_TITLES = {
   ingestion: "Сбор новостей",
   synthesis: "Генерация статей",
   translation: "Перевод статей",
   conferences: "Сбор конференций",
+  digest: "Дайджест исследований",
 };
 
 const CACHE_MS = 5000;

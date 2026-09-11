@@ -122,6 +122,9 @@ export const LOCK_KEYS = {
   // коллекцию, что и ручное добавление. Два одновременных обхода — двойной
   // счёт и гонка на дедупе.
   conferenceIngestion: "lock:conferences:ingest",
+  // Сборка дайджеста: вызов модели на каждый материал. Два прогона разом —
+  // двойной счёт и гонка на уникальном newsId.
+  digest: "lock:digest:build",
 };
 
 export default withLock;

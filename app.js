@@ -13,6 +13,7 @@ import ingestionRoutes from "./modules/ingestion/ingestion.routes.js";
 import synthesisRoutes from "./modules/synthesis/synthesis.routes.js";
 import searchRoutes from "./modules/search/search.routes.js";
 import conferenceRoutes from "./modules/conferences/conference.routes.js";
+import digestRoutes from "./modules/digest/digest.routes.js";
 
 import { startScheduler } from "./modules/scheduler/scheduler.js";
 import { requireInternalToken } from "./middlewares/internalAuth.js";
@@ -96,6 +97,11 @@ app.use("/api/search", searchRoutes);
 // Конференции. Витрина отдаёт только опубликованное; всё, что решает, ЧТО
 // увидят врачи, лежит под /admin и закрыто внутренним токеном.
 app.use("/api/conferences", conferenceRoutes);
+
+// Дайджест исследований: НАШЕ короткое изложение чужой публикации со
+// ссылкой на неё. Отдельная коллекция от news именно затем, чтобы полный
+// текст чужой статьи физически не мог сюда попасть.
+app.use("/api/digest", digestRoutes);
 
 // Управление фоновыми задачами: включить и выключить сбор новостей,
 // генерацию статей, перевод. Закрыто внутренним токеном — ходит только

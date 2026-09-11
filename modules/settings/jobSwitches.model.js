@@ -1,7 +1,7 @@
 // modules/settings/jobSwitches.model.js
 //
 // Переключатели фоновых задач: сбор новостей, генерация статей, перевод,
-// конференции.
+// конференции, дайджест исследований.
 //
 // ЗАЧЕМ В БАЗЕ, А НЕ В ПЕРЕМЕННЫХ ОКРУЖЕНИЯ. Выключатели через окружение
 // в проекте уже есть (DISABLE_SCHEDULERS, CONFERENCE_INGESTION), но они
@@ -32,6 +32,11 @@ const jobSwitchSchema = new mongoose.Schema(
     synthesis: { type: Boolean, default: true },
     translation: { type: Boolean, default: true },
     conferences: { type: Boolean, default: true },
+    /* Дайджест исследований. Поле обязано быть в схеме, а не только в
+       списке JOBS: строгий режим Mongoose молча выбрасывает из $set пути,
+       которых в схеме нет, — тумблер в панели нажимался бы, а состояние не
+       менялось. */
+    digest: { type: Boolean, default: true },
 
     // Кто и когда переключил — чтобы через месяц было понятно, почему
     // статьи не выходят.

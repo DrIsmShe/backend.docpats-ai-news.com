@@ -100,10 +100,41 @@ async function getFeed(limit = 20, locale = "en") {
   return items.map((a) => forList(applyTranslation(a, locale)));
 }
 
+/**
+ * Один материал.
+ *
+ * ПОЛНОГО ТЕКСТА ЗДЕСЬ БОЛЬШЕ НЕТ, И ЭТО ГЛАВНОЕ.
+ *
+ * Раньше этот метод отдавал документ целиком — вместе с полным текстом
+ * чужой публикации, собранным с сайта издания. То есть открытый эндпоинт
+ * раздавал чужое произведение, а страница показывала его как свою. Ни
+ * согласия издателя, ни лицензии на это нет ни у одного источника в списке.
+ *
+ * Взамен есть дайджест: НАШЕ изложение в три-четыре предложения со ссылкой
+ * на оригинал (modules/digest). Отсюда наружу уходят только факты —
+ * заголовок, издание, дата, DOI — и адрес, по которому текст читают у того,
+ * кто им владеет.
+ *
+ * Аннотацию (summary / aiSummaryShort) тоже не отдаём: проверка показала,
+ * что это дословная аннотация журнала, а не наша сводка. Тот же чужой
+ * текст, просто короче.
+ */
 async function getBySlug(slug, locale = "en") {
   const article = await News.findOne({ slug, status: "published" }).lean();
   if (!article) return null;
-  return applyTranslation(article, locale);
+
+  const переведённый = applyTranslation(article, locale);
+  const {
+    content,
+    embedding,
+    translations,
+    summary,
+    aiSummaryShort,
+    aiSummaryLong,
+    ...остальное
+  } = переведённый;
+
+  return { ...остальное, hasFullText: false };
 }
 
 // Представляемся честно, своим именем и адресом.

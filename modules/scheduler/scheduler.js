@@ -6,6 +6,7 @@ import { runSynthesis } from "../synthesis/synthesis.service.js";
 import { догнатьПереводы } from "../synthesis/synthesis.retranslate.js";
 import Synthesis from "../synthesis/synthesis.model.js";
 import { runConferenceIngestion } from "../conferences/conference.ingestion.js";
+import { собратьПорцию } from "../digest/digest.service.js";
 import { withLock, LOCK_KEYS } from "../../utils/redisLock.js";
 import { isEnabled } from "../settings/jobSwitches.service.js";
 
@@ -164,7 +165,41 @@ export async function startScheduler() {
     });
   }
 
+  /* 6. Дайджест — 05:00 UTC, после сбора (03:00) и синтеза (04:00).
+   *
+   * Порция, а не всё сразу. В архиве шесть с половиной тысяч материалов со
+   * ссылкой на источник; разобрать их одним прогоном — это единовременный
+   * счёт за модель и упор в её лимиты. По сотне в сутки архив разбирается
+   * за два месяца, а свежее попадает в ленту на следующее утро: выборка
+   * отсортирована по дате, и новое всегда впереди старого.
+   *
+   * Размер порции правится через DIGEST_BATCH, полное отключение —
+   * DIGEST=off или тумблером «Дайджест исследований» в панели.
+   */
+  if (process.env.DIGEST !== "off") {
+    cron.schedule(process.env.DIGEST_CRON || "0 5 * * *", async () => {
+      if (!(await isEnabled("digest"))) {
+        console.log("⏸  Дайджест выключен в панели — пропускаем");
+        return;
+      }
+      try {
+        const { acquired, result } = await withLock(
+          LOCK_KEYS.digest,
+          60 * 60 * 1000,
+          () => собратьПорцию({ сколько: Number(process.env.DIGEST_BATCH) || 100 }),
+        );
+        if (!acquired) {
+          console.log("⏭  Дайджест пропущен: сборка уже идёт");
+          return;
+        }
+        console.log(`✅ Дайджест: обработано ${result?.обработано ?? 0}`);
+      } catch (error) {
+        console.error("❌ Дайджест упал:", error.message);
+      }
+    });
+  }
+
   console.log(
-    "📅 Scheduler ready — ingestion at 03:00 & 15:00 UTC, synthesis at 04:00 UTC with catch-up at 10:00 & 16:00 (1 article/day)",
+    "📅 Scheduler ready — ingestion at 03:00 & 15:00 UTC, synthesis at 04:00 UTC with catch-up at 10:00 & 16:00 (1 article/day), digest at 05:00 UTC",
   );
 }
