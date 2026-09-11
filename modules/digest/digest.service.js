@@ -259,55 +259,85 @@ export async function собратьЭлемент(новость) {
  * месяца, и никакого пика.
  */
 export async function собратьПорцию({ сколько = 100 } = {}) {
-  /* Дубли отсеиваются здесь, а не после: один и тот же пресс-релиз
-     приходит из четырёх источников, и дайджест бы его учетверил. */
-  const кандидаты = await News.find(
-    {
-      status: "published",
-      isDuplicate: { $ne: true },
-      canonicalUrl: { $exists: true, $ne: "" },
-    },
-    {
-      title: 1,
-      summary: 1,
-      aiSummaryShort: 1,
-      content: 1,
-      canonicalUrl: 1,
-      sourceName: 1,
-      specialty: 1,
-      categoryPrimary: 1,
-      specialties: 1,
-      tags: 1,
-      slug: 1,
-      importanceScore: 1,
-      evidenceLevel: 1,
-      evidenceSignals: 1,
-      journal: 1,
-      doi: 1,
-      pmid: 1,
-      publishedAt: 1,
-      createdAt: 1,
-    },
-  )
+  /* ДВА ЗАПРОСА ВМЕСТО ОДНОГО, И ЭТО НЕ ИЗЛИШЕСТВО.
+   *
+   * Раньше здесь был один find с проекцией, включающей content, и
+   * сортировкой по дате. На порции в сотню это работало, на трёхстах —
+   * упало:
+   *
+   *   Sort exceeded memory limit of 33554432 bytes, but did not opt in
+   *   to external sorting
+   *
+   * Mongo сортирует в памяти, а в выборку тянулись полные тексты — до
+   * 120 тысяч знаков на запись, тысяча восемьсот записей. Тридцати двух
+   * мегабайт не хватило. Ровно так же в августе встала генерация статей
+   * (см. индекс createdAt в news.model.js) — та же ошибка, другое место.
+   *
+   * Поэтому сначала берём ТОЛЬКО идентификаторы и даты: такие документы
+   * весят десятки байт, и сортировка шести тысяч из них укладывается в
+   * лимит с огромным запасом. Полные записи достаём потом и только для
+   * той сотни, что реально пойдёт в работу.
+   *
+   * Дубли отсеиваются здесь, а не после: один и тот же пресс-релиз
+   * приходит из четырёх источников, и дайджест бы его учетверил. */
+  const условие = {
+    status: "published",
+    isDuplicate: { $ne: true },
+    canonicalUrl: { $exists: true, $ne: "" },
+  };
+
+  const лёгкие = await News.find(условие, { _id: 1 })
     .sort({ publishedAt: -1, createdAt: -1 })
     .limit(сколько * 6)
     .lean();
 
   /* Сверяемся только по этой выборке: тянуть все newsId дайджеста ради
-     фильтра — лишний мегабайт на каждом прогоне. Сорвавшиеся в этот
-     список не попадают — они вернутся в очередь и будут повторены. */
+     фильтра — лишний мегабайт на каждом прогоне. Сорвавшиеся в список
+     готовых не попадают — они вернутся в очередь и будут повторены, а
+     исчерпавшие три попытки отсекаются вместе с готовыми. */
   const готовые = await DigestItem.find(
     {
-      newsId: { $in: кандидаты.map((н) => н._id) },
+      newsId: { $in: лёгкие.map((н) => н._id) },
       $or: [{ status: "published" }, { attempts: { $gte: ПОТОЛОК_ПОПЫТОК } }],
     },
     { newsId: 1 },
   ).lean();
   const уже = new Set(готовые.map((d) => String(d.newsId)));
 
-  const очередь = кандидаты
+  const идентификаторы = лёгкие
     .filter((н) => !уже.has(String(н._id)))
-    .slice(0, сколько);
+    .slice(0, сколько)
+    .map((н) => н._id);
+
+  /* Полные записи — только для отобранных. Порядок после $in не
+     гарантирован, но он здесь и не нужен: каждая обрабатывается сама по
+     себе. */
+  const очередь = идентификаторы.length
+    ? await News.find(
+        { _id: { $in: идентификаторы } },
+        {
+          title: 1,
+          summary: 1,
+          aiSummaryShort: 1,
+          content: 1,
+          canonicalUrl: 1,
+          sourceName: 1,
+          specialty: 1,
+          categoryPrimary: 1,
+          specialties: 1,
+          tags: 1,
+          slug: 1,
+          importanceScore: 1,
+          evidenceLevel: 1,
+          evidenceSignals: 1,
+          journal: 1,
+          doi: 1,
+          pmid: 1,
+          publishedAt: 1,
+          createdAt: 1,
+        },
+      ).lean()
+    : [];
 
   if (!очередь.length) {
     console.log("📰 Дайджест: новых материалов нет");
